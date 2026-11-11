@@ -1,55 +1,90 @@
 #!/bin/bash
 # ===========================================================================
 #  setup_train_env.sh -- ONE-TIME, on a Jean-Zay LOGIN node (internet via proxy).
-#  Builds the MAMBA-DSR / Diffusion-DSR / DSR training env without compiling CUDA:
-#    python 3.10 + torch 2.1.2/cu118 + prebuilt mamba-ssm 1.1.1 & causal-conv1d 1.1.1 wheels
-#    (the bundled MAMBA-DSR/mamba_backend only needs their selective_scan_cuda /
-#    causal_conv1d_cuda kernels), DSR deps, and DSR's triangle_hash Cython extension.
-#  Then: sbatch jeanzay/train_env/gpu_selftest.slurm   (V100 forward/backward check)
+#
+#  Quota-light training env for MAMBA-DSR / Diffusion-DSR / DSR:
+#    * IDRIS module  pytorch-gpu/py3/2.1.1  (torch, numpy, scipy, ... cost 0 quota)
+#    * pip --user extras into $PYTHONUSERBASE (only what the module lacks)
+#    * official prebuilt mamba-ssm 1.1.1 + causal-conv1d 1.1.1 wheels matching the
+#      module's torch / CUDA / C++ ABI / python (no CUDA compilation; sm_70 = V100 included)
+#    * DSR/lib/inside_mesh triangle_hash Cython extension
+#  Then: sbatch jeanzay/train_env/gpu_selftest.slurm
 #
 #     ./jeanzay/train_env/setup_train_env.sh
-#     CONDA_MODULE=miniforge/24.9.0 ./jeanzay/train_env/setup_train_env.sh
+#     TORCH_MODULE=pytorch-gpu/py3/2.1.1 PYTHONUSERBASE=$WORK/envs/dsr_train ./jeanzay/train_env/setup_train_env.sh
 # ===========================================================================
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
-ENV_PREFIX="${ENV_PREFIX:-$WORK/envs/dsr_train}"
-export CONDA_PKGS_DIRS="${CONDA_PKGS_DIRS:-$WORK/.conda/pkgs}" PIP_CACHE_DIR="${PIP_CACHE_DIR:-$WORK/.cache/pip}"
+TORCH_MODULE="${TORCH_MODULE:-pytorch-gpu/py3/2.1.1}"
+export PYTHONUSERBASE="${PYTHONUSERBASE:-$WORK/envs/dsr_train}"
 [ -d "$REPO/DSR/lib" ] || { echo "DSR/ missing -> run $REPO/setup_dsr.sh first"; exit 1; }
 
 module purge
-LOADED=""
-for m in ${CONDA_MODULE:-miniforge anaconda-py3}; do
-  if module load "$m" 2>/dev/null && command -v conda >/dev/null; then LOADED="$m"; break; fi
-done
-[ -n "$LOADED" ] || { echo "No conda module (tried ${CONDA_MODULE:-miniforge anaconda-py3}); see: module avail 2>&1 | grep -iE 'conda|forge'"; exit 1; }
-echo "[env] conda from module $LOADED -> $ENV_PREFIX"
+module load "$TORCH_MODULE"
+unset PYTHONNOUSERSITE
+export PATH="$PYTHONUSERBASE/bin:$PATH"
+PIP=(python -m pip install --user --no-cache-dir)
+echo "[env] module $TORCH_MODULE + user packages in $PYTHONUSERBASE"
 
-[ -x "$ENV_PREFIX/bin/python" ] || conda create -y -p "$ENV_PREFIX" -c conda-forge --override-channels python=3.10 pip
-PY="$ENV_PREFIX/bin/python"; export PYTHONNOUSERSITE=1
+# Pin what the module already provides so pip never upgrades/duplicates it.
+CONSTRAINTS="$PYTHONUSERBASE/module_constraints.txt"; mkdir -p "$PYTHONUSERBASE"
+python - "$CONSTRAINTS" <<'PY'
+import sys, importlib.metadata as md
+pins = []
+for name in ("torch", "numpy", "scipy", "triton", "pillow", "matplotlib", "pandas", "scikit-image"):
+    try: pins.append(f"{name}=={md.version(name)}")
+    except md.PackageNotFoundError: pass
+open(sys.argv[1], "w").write("\n".join(pins) + "\n")
+print("[env] module provides:", ", ".join(pins))
+PY
 
-$PY -m pip install --upgrade pip
-$PY -m pip install torch==2.1.2 --index-url https://download.pytorch.org/whl/cu118
-$PY -m pip install "numpy<2" scipy "scikit-image<0.25" trimesh pyhocon tqdm imageio plotly plyfile \
-                   einops cython packaging matplotlib pandas
+# Install only missing extras (import name -> pip name).
+MISSING=$(python - <<'PY'
+import importlib.util as u
+need = {"trimesh": "trimesh", "pyhocon": "pyhocon", "plyfile": "plyfile", "einops": "einops",
+        "skimage": "scikit-image", "imageio": "imageio", "plotly": "plotly", "tqdm": "tqdm",
+        "Cython": "cython", "packaging": "packaging"}
+print(" ".join(p for m, p in need.items() if u.find_spec(m) is None))
+PY
+)
+if [ -n "$MISSING" ]; then
+  echo "[env] installing: $MISSING"
+  "${PIP[@]}" -c "$CONSTRAINTS" $MISSING
+fi
+
+# Prebuilt Mamba kernels matching this torch build.
+TAG=$(python - <<'PY'
+import sys, torch
+cu = "cu118" if torch.version.cuda.startswith("11") else "cu122"
+tv = ".".join(torch.__version__.split("+")[0].split(".")[:2])
+abi = "TRUE" if torch._C._GLIBCXX_USE_CXX11_ABI else "FALSE"
+py = f"cp{sys.version_info.major}{sys.version_info.minor}"
+print(f"{cu}torch{tv}cxx11abi{abi}-{py}-{py}-linux_x86_64.whl")
+PY
+)
+echo "[env] mamba wheels: *+$TAG"
 GH=https://github.com
-TAG=cu118torch2.1cxx11abiFALSE-cp310-cp310-linux_x86_64.whl
-$PY -m pip install --no-deps \
+"${PIP[@]}" --no-deps \
   "$GH/Dao-AILab/causal-conv1d/releases/download/v1.1.1/causal_conv1d-1.1.1+$TAG" \
   "$GH/state-spaces/mamba/releases/download/v1.1.1/mamba_ssm-1.1.1+$TAG"
 
 echo "[env] building DSR/lib/inside_mesh (triangle_hash)"
-( cd "$REPO/DSR/lib/inside_mesh" && $PY setup.py build_ext --inplace >/dev/null )
+( cd "$REPO/DSR/lib/inside_mesh" && python setup.py build_ext --inplace >/dev/null )
 
 cat > "$HERE/env_train.sh" <<EOT
 # generated by setup_train_env.sh on $(date +%F) -- source before training
-export PATH="$ENV_PREFIX/bin:\$PATH"
-export PYTHONNOUSERSITE=1 PYTHONUNBUFFERED=1
+module purge
+module load $TORCH_MODULE
+unset PYTHONNOUSERSITE
+export PYTHONUSERBASE="$PYTHONUSERBASE"
+export PATH="\$PYTHONUSERBASE/bin:\$PATH"
+export PYTHONUNBUFFERED=1
 EOT
 
 echo "[env] import check (CPU, login node)"
 cd "$REPO/MAMBA-DSR"
-$PY - <<'PY'
+python - <<'PY'
 import sys, os
 sys.path.insert(0, os.path.abspath("../DSR"))
 import torch, numpy, trimesh, skimage, pyhocon, einops
@@ -60,4 +95,5 @@ from model import MambaLatentPredictor
 print(f"OK torch {torch.__version__} cuda {torch.version.cuda} numpy {numpy.__version__} "
       f"skimage {skimage.__version__} trimesh {trimesh.__version__}")
 PY
-echo "[env] done -> source $HERE/env_train.sh ; next: sbatch $HERE/gpu_selftest.slurm"
+echo "[env] user packages: $(du -sh "$PYTHONUSERBASE" | cut -f1), $(find "$PYTHONUSERBASE" | wc -l) files"
+echo "[env] done -> next: sbatch $HERE/gpu_selftest.slurm   (from the repo root)"
