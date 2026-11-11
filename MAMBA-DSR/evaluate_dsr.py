@@ -73,8 +73,20 @@ def main():
     root = os.path.join(RECON_ROOT, f"DSR_{args.case}_{args.run_name}")
     os.makedirs(root, exist_ok=True)
     rows = []
+    # Per-frame cache so a walltime-killed evaluation resumes (same ckpt + settings only).
+    cache_dir = os.path.join(root, "frame_results")
+    os.makedirs(cache_dir, exist_ok=True)
+    c_stat = os.stat(args.ckpt)
+    fingerprint = {"ckpt": os.path.abspath(args.ckpt), "mtime": c_stat.st_mtime,
+                   "size": c_stat.st_size, "resolution": args.resolution}
 
     for frame_index in frame_indices:
+        cache_path = os.path.join(cache_dir, f"frame_{frame_index:05d}.json")
+        if os.path.isfile(cache_path):
+            cached = json.load(open(cache_path))
+            if cached.get("fingerprint") == fingerprint:
+                rows.append(cached["result"])
+                continue
         gt_path = ground_truth_path(DSR_DIR, args.gt_case, frame_index)
         if not os.path.isfile(gt_path):
             raise FileNotFoundError(gt_path)
@@ -100,6 +112,9 @@ def main():
             "normal_consistency": float(compute_normal_consistency(gt, pred)),
         }
         rows.append(metrics)
+        with open(cache_path + ".tmp", "w") as handle:
+            json.dump({"fingerprint": fingerprint, "result": metrics}, handle)
+        os.replace(cache_path + ".tmp", cache_path)
         if not args.keep_reconstructions:
             shutil.rmtree(out_dir, ignore_errors=True)
         print(

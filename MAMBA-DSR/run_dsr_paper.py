@@ -17,9 +17,10 @@ from run_multicase import (
     CONFIG_DIR,
     DSR_DIR,
     ROOT,
+    cached_normalization,
+    ckpt_epoch,
     ensure_gt_link,
     make_train_view,
-    normalization,
     obj_indices,
 )
 
@@ -44,6 +45,18 @@ def make_dsr_config(case, spec, train_view, full_count, train_count, scale, tran
     return path
 
 
+def drop_empty_runs(case):
+    """DSR --is_continue resumes the newest timestamp dir; one killed before its
+    first checkpoint would make that load fail, so remove such dirs."""
+    root = DSR_DIR / "exp" / "dsr_paper" / case
+    if root.is_dir():
+        for run_dir in root.iterdir():
+            if run_dir.is_dir() and not (run_dir / "checkpoints" / "ckpt_latest.pth").is_file():
+                import shutil
+                print(f"[{case}] removing checkpoint-less DSR run {run_dir}", flush=True)
+                shutil.rmtree(run_dir)
+
+
 def latest_checkpoint(case):
     root = DSR_DIR / "exp" / "dsr_paper" / case
     candidates = list(root.glob("*/checkpoints/ckpt_latest.pth"))
@@ -62,6 +75,9 @@ def main():
     ap.add_argument("--allow-truncated-local-data", action="store_true")
     ap.add_argument("--dry-run", action="store_true",
                     help="Validate the manifest and prepare symlink views/configs without training.")
+    ap.add_argument("--resume", action="store_true",
+                    help="Continue DSR training from its latest checkpoint (DSR --is_continue) "
+                         "and skip finished training/evaluation.")
     args = ap.parse_args()
 
     cases = paper_cases(ROOT.parent, DSR_DIR)
@@ -78,7 +94,7 @@ def main():
             )
         full_count = min(available_count, required) if required else available_count
         train_indices = spec.train_indices(full_count)
-        scale, translate = normalization(spec.full_dir, train_indices)
+        scale, translate = cached_normalization(spec, train_indices)
         train_view = make_train_view(f"dsr_{case}", spec.full_dir, train_indices)
         ensure_gt_link(spec)
         config = make_dsr_config(
@@ -92,13 +108,26 @@ def main():
         )
         if args.dry_run:
             continue
-        subprocess.run(
-            [python, "runner_igr_t.py", "--conf", str(config), "--mode", "train",
-             "--case", case, "--gpu", args.gpu],
-            cwd=DSR_DIR,
-            check=True,
-        )
+        try:
+            trained = ckpt_epoch(latest_checkpoint(case)) == args.epochs
+        except FileNotFoundError:
+            trained = False
+        if not (args.resume and trained):
+            if args.resume:
+                drop_empty_runs(case)
+            subprocess.run(
+                [python, "runner_igr_t.py", "--conf", str(config), "--mode", "train",
+                 "--case", case, "--gpu", args.gpu, *(["--is_continue"] if args.resume else [])],
+                cwd=DSR_DIR,
+                check=True,
+            )
+        else:
+            print(f"[{case}] DSR training complete ({args.epochs} epochs) -- skipped", flush=True)
         ckpt = latest_checkpoint(case)
+        metrics = ROOT.parent / "reconstructions" / f"DSR_{case}_{case}_paper_train_eval" / "metrics.json"
+        if args.resume and metrics.is_file() and metrics.stat().st_mtime > ckpt.stat().st_mtime:
+            print(f"[{case}] DSR evaluation complete -- skipped", flush=True)
+            continue
         index_text = ",".join(str(index) for index in train_indices)
         subprocess.run(
             [

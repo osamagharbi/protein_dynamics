@@ -170,6 +170,15 @@ def main():
                           "plus preserves the off-surface field. Directly protects the zero-level-set "
                           "(what IoU/Chamfer actually measure), unlike the mean-squared-SDF form "
                           "which a tiny value error can pass while the surface still shifts.")
+    ap.add_argument("--resume", action="store_true",
+                    help="Continue from <run>/checkpoints/ckpt_latest.pth if it exists "
+                         "(decoder, latents, optimizer, loss log, RNG). The train split "
+                         "and latent size must match. Exits at once if already finished.")
+    ap.add_argument("--stop-after-minutes", type=float, default=0.0,
+                    help="Save a checkpoint and exit cleanly after this many minutes of "
+                         "training (0 = no limit). Used to chain walltime-limited Slurm jobs.")
+    ap.add_argument("--save-every", type=int, default=200,
+                    help="Checkpoint every N epochs.")
     args = ap.parse_args()
 
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
@@ -285,8 +294,64 @@ def main():
     sampler_type = conf.get_string("model.sampler.sampler_type")
 
     loss_log = {"epoch": [], "mnfld_loss": [], "grad_loss": [], "latent_loss": [], "normals_loss": [], "smooth_loss": [], "consist_loss": [], "loss": []}
+    start_epoch = 1
+    latest_path = os.path.join(ckpt_dir, "ckpt_latest.pth")
+    if args.resume and os.path.isfile(latest_path):
+        if args.init_from:
+            raise ValueError("--resume and --init-from are mutually exclusive")
+        ck = torch.load(latest_path, map_location="cpu", weights_only=False)
+        if ck.get("train_frame_indices") != train_frame_indices or ck.get("latent_size") != latent_size:
+            raise ValueError(f"--resume: {latest_path} has a different train split or latent size")
+        if ck.get("end_iter", args.end_iter) != args.end_iter:
+            raise ValueError(f"--resume: checkpoint was started with end_iter={ck['end_iter']} "
+                             f"(LR schedule differs), not {args.end_iter}")
+        network.load_state_dict(ck["model_state_dict"])
+        lat_vecs.load_state_dict(ck["latent_codes"])
+        optimizer.load_state_dict(ck["optimizer_state_dict"])
+        rng = ck.get("rng_state")
+        if rng:
+            torch.set_rng_state(rng["torch"])
+            torch.cuda.set_rng_state_all(rng["cuda"])
+            np.random.set_state(rng["numpy"])
+        log_path = os.path.join(out_dir, "loss_log.pkl")
+        if os.path.isfile(log_path):
+            loss_log = pickle.load(open(log_path, "rb"))
+        start_epoch = int(ck["epoch"]) + 1
+        print(f"[resume] {latest_path}: epoch {ck['epoch']}/{args.end_iter}", flush=True)
+        if start_epoch > args.end_iter:
+            print("[done] Stage A already complete", flush=True)
+            return
+
+    def save_checkpoint(epoch):
+        ckpt = {
+            "model_state_dict": network.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "latent_codes": lat_vecs.state_dict(),
+            "epoch": epoch,
+            "end_iter": args.end_iter,
+            "complete": epoch >= args.end_iter,
+            "num_frames": num_frames,
+            "full_num_frames": full_num_frames,
+            "latent_size": latent_size,
+            "case": args.case,
+            "protocol": protocol_name,
+            "train_frame_indices": train_frame_indices,
+            "eval_frame_indices": [i for i in range(full_num_frames) if i not in set(train_frame_indices)],
+            "normalization_scale": raw_dataset.s,
+            "normalization_translation": raw_dataset.t,
+            "protocol_times": all_protocol_times,
+            "seed": args.seed,
+            "rng_state": {"torch": torch.get_rng_state(), "cuda": torch.cuda.get_rng_state_all(),
+                          "numpy": np.random.get_state()},
+        }
+        tmp = latest_path + ".tmp"   # atomic: a walltime kill never leaves a torn checkpoint
+        torch.save(ckpt, tmp)
+        os.replace(tmp, latest_path)
+        pickle.dump(loss_log, open(os.path.join(out_dir, "loss_log.pkl"), "wb"))
+        print(f"[checkpoint] saved at epoch {epoch} -> {latest_path}", flush=True)
+
     t0 = time.time()
-    for epoch in range(1, args.end_iter + 1):
+    for epoch in range(start_epoch, args.end_iter + 1):
         network.train()
         if not args.init_from:  # keep flat ft-lr when fine-tuning
             for i, sched in enumerate(lr_schedules):
@@ -472,27 +537,15 @@ def main():
                   f"smooth={epoch_means['smooth_loss']:.4f} consist={epoch_means['consist_loss']:.4f} "
                   f"({elapsed:.1f}s elapsed)")
 
-        if epoch % 200 == 0 or epoch == args.end_iter:
-            ckpt = {
-                "model_state_dict": network.state_dict(),
-                "optimizer_state_dict": optimizer.state_dict(),
-                "latent_codes": lat_vecs.state_dict(),
-                "epoch": epoch,
-                "num_frames": num_frames,
-                "full_num_frames": full_num_frames,
-                "latent_size": latent_size,
-                "case": args.case,
-                "protocol": protocol_name,
-                "train_frame_indices": train_frame_indices,
-                "eval_frame_indices": [i for i in range(full_num_frames) if i not in set(train_frame_indices)],
-                "normalization_scale": raw_dataset.s,
-                "normalization_translation": raw_dataset.t,
-                "protocol_times": all_protocol_times,
-                "seed": args.seed,
-            }
-            torch.save(ckpt, os.path.join(ckpt_dir, "ckpt_latest.pth"))
-            pickle.dump(loss_log, open(os.path.join(out_dir, "loss_log.pkl"), "wb"))
-            print(f"[checkpoint] saved at epoch {epoch} -> {ckpt_dir}/ckpt_latest.pth")
+        out_of_time = args.stop_after_minutes > 0 and (time.time() - t0) / 60 >= args.stop_after_minutes
+        if epoch % args.save_every == 0 or epoch == args.end_iter or out_of_time:
+            save_checkpoint(epoch)
+        if out_of_time and epoch < args.end_iter:
+            rate = (time.time() - t0) / (epoch - start_epoch + 1)
+            print(f"[stop] time budget {args.stop_after_minutes:.0f} min reached at epoch "
+                  f"{epoch}/{args.end_iter} ({rate:.1f} s/epoch, ~{rate * (args.end_iter - epoch) / 3600:.1f} h "
+                  f"left); rerun with --resume", flush=True)
+            return
 
     print(f"[done] total time {time.time()-t0:.1f}s, {num_frames} per-frame latents in "
           f"{ckpt_dir}/ckpt_latest.pth")

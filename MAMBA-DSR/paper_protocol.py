@@ -44,8 +44,39 @@ class PaperCase:
         return 0
 
 
+# Rule for prepared datasets whose paper training rule is unknown (GPCRmd):
+# the same "first 1500, every 10th" used for AdK / NhaA / YiiP / Dryad.
+DEFAULT_RULE = (1500, 10)
+
+
+def discovered_cases(processed: Path) -> dict[str, PaperCase]:
+    """Every complete dataset written by jeanzay/data_prep (``<name>/meta.json``)."""
+    import json
+    cases = {}
+    for meta_path in sorted(processed.glob("*/meta.json")):
+        meta = json.loads(meta_path.read_text())
+        if meta.get("status") != "complete":
+            continue
+        name, n = meta_path.parent.name, int(meta["n_expected"])
+        rule = meta.get("paper_train_rule") or {}
+        if rule.get("step"):
+            stop, step = rule.get("stop") or n, rule["step"]
+            note = f"jeanzay registry rule: first {min(stop, n)}, every {step}"
+        else:
+            stop, step = DEFAULT_RULE
+            note = (f"NON-PAPER default: first {min(stop, n)}, every {step} "
+                    "(paper rule for this dataset unverified)")
+        cases[name] = PaperCase(name, meta_path.parent / "gt", f"mamba_{name}_gt",
+                                n, 0, stop, step, note)
+    return cases
+
+
 def paper_cases(project_root: Path, dsr_root: Path) -> dict[str, PaperCase]:
     processed = project_root / "datasets" / "DSR_processed"
+    return {**discovered_cases(processed), **_fixed_cases(processed, dsr_root)}
+
+
+def _fixed_cases(processed: Path, dsr_root: Path) -> dict[str, PaperCase]:
     return {
         # Official DSR demo: 30 observed frames, every fifth frame, with 149
         # available ground-truth frames in the checked-in data.

@@ -181,12 +181,26 @@ def main():
 
     root = os.path.join(RECON_ROOT, f"MAMBA-DSR_{args.case}_{args.run_name}")
     os.makedirs(root, exist_ok=True)
+    # Per-frame result cache: a walltime-killed evaluation resumes where it stopped.
+    # Entries are reused only for the same Stage-B checkpoint and evaluation settings.
+    cache_dir = os.path.join(root, "frame_results")
+    os.makedirs(cache_dir, exist_ok=True)
+    b_stat = os.stat(args.stage_b_ckpt)
+    fingerprint = {"stage_b_ckpt": os.path.abspath(args.stage_b_ckpt), "stage_b_mtime": b_stat.st_mtime,
+                   "stage_b_size": b_stat.st_size, "resolution": args.resolution,
+                   "metric_space": args.metric_space, "num_samples": args.num_samples, "seed": args.seed}
     results = []
     for frame_index in frame_indices:
+        cache_path = os.path.join(cache_dir, f"frame_{frame_index:05d}.json")
+        if os.path.isfile(cache_path):
+            cached = json.load(open(cache_path))
+            if cached.get("fingerprint") == fingerprint:
+                results.append(cached["result"])
+                continue
         gt_path = ground_truth_path(DSR_DIR, args.gt_case, frame_index)
         if not os.path.isfile(gt_path):
             raise FileNotFoundError(f"missing exact ground-truth frame: {gt_path}")
-        print(f"[eval] frame {frame_index}/{len(all_times) - 1}, t={all_times[frame_index]:.6f}")
+        print(f"[eval] frame {frame_index}/{len(all_times) - 1}, t={all_times[frame_index]:.6f}", flush=True)
         result = evaluate_frame(
             decoder, mamba_model, latent_mean, latent_std,
             conf, frame_index, all_times[frame_index], gt_path,
@@ -194,6 +208,9 @@ def main():
             args.resolution, args.metric_space,
         )
         results.append(result)
+        with open(cache_path + ".tmp", "w") as handle:
+            json.dump({"fingerprint": fingerprint, "result": result}, handle)
+        os.replace(cache_path + ".tmp", cache_path)
         if not args.keep_reconstructions:
             shutil.rmtree(os.path.join(root, f"frame_{frame_index:03d}"), ignore_errors=True)
         if "iou_mean" in result:
