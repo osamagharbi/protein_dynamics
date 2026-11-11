@@ -25,3 +25,4 @@ __pycache__/
 *.so
 build/
 jeanzay/data_prep/env.sh
+jeanzay/train_env/env_train.sh
