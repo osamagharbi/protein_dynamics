@@ -1,0 +1,7 @@
+dataset,window,paper_iou_mean,paper_iou_std,paper_chamfer_mean,paper_chamfer_std,paper_nc_mean,paper_nc_std,source
+DIMS,1-10,0.8467,0.0423,0.0010,0.0005,0.8666,0.0504,DSR Table 2
+DIMS,11-20,0.6835,0.0551,0.0055,0.0020,0.6932,0.0474,DSR Table 2
+I-FABP,1-10,0.8878,0.0142,0.0006,0.0001,0.9271,0.0159,DSR Table 2
+I-FABP,11-20,0.8444,0.0153,0.0012,0.0002,0.8797,0.0164,DSR Table 2
+FRODA,1-10,0.7660,0.0502,0.0012,0.0006,0.8267,0.0490,DSR Table 2
+FRODA,11-20,0.6043,0.0474,0.0044,0.0012,0.6783,0.0384,DSR Table 2

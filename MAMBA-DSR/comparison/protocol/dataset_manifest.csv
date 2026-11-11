@@ -1,0 +1,13 @@
+dataset,paper_experiment,source_status,local_source,source_crop,training_rule,training_frames,current_status,next_action
+adk_equilibrium,Table 1,available,DSR_processed/adk_equilibrium/gt,1500,step 10,150,complete,normal-consistency validity note
+nhaa_equilibrium,Table 1,raw available,DSR/MDAnalysisData/nhaa_equilibrium,1500,step 10,150,not started,convert and train
+yiip_equilibrium,Table 1,raw available,DSR/MDAnalysisData/yiip_equilibrium,1500,step 10,150,not started,convert and train
+ifabp_water,Table 1,raw available,DSR/MDAnalysisData/ifabp_water,400,step 5,80,not started,convert and train
+adk_dims,Table 1,archive available,DSR/MDAnalysisData/adk_transitions_DIMS,80,step 2,40,blocked,extract archive and topology
+adk_froda,Table 1,archive available,DSR/MDAnalysisData/adk_transitions_FRODA,120,step 3,40,blocked,extract archive and topology
+dry_ad_md,Table 1,archive requires source,DSR/DRY_AD_MD,verify,verify,blocked,obtain paper source archive
+abeta_30,Section 4.1/demo,available,DSR/abeta_150,149,step 5,30,exploratory only,verify exact paper split
+abeta_wt,Section 4.1 related,raw available,DSR_processed/abeta_wt,first 2000,verify,verify,not comparable yet,verify paper protocol
+abeta_e22g,Section 4.1 related,raw available,DSR_processed/abeta_e22g,first 2000,verify,verify,not comparable yet,verify paper protocol
+small_proteins,Table 1,missing,protG/ntl9/bba/cspa/T0765/ww/T0855/T0773/T0816/gpW/bbl/hyp/T0769/T0771,verify,verify,verify,blocked,obtain exact source data
+gpcrmd,Section 4.3.3,topologies missing,DSR/GPCRmd,verify,paper-specific,4 trajectories,blocked,obtain compatible topologies
