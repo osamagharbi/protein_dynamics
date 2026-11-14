@@ -26,3 +26,17 @@ METHOD=dsr CASES="adk_equilibrium ifabp_water" ./jeanzay/train/submit.sh   # DSR
   `jeanzay/train/state/<method>_<case><tag>/`. A FAILED case is skipped by its remaining links;
   re-running `submit.sh` for it clears the marker.
 * Large meshes (NhaA, YiiP, GPCR) may need `CONSTRAINT=v100-32g`.
+
+## Held-out evaluation (after training)
+
+Frames the model never saw, evaluated from the finished checkpoints (no retraining):
+interpolation (midpoints between training frames), future prediction (next 1-10 and
+11-20 frames, both as thinned steps and as raw frames, since the DSR paper does not
+say which), and reference baselines that copy the nearest / last training frame.
+
+    ./jeanzay/train/submit_heldout.sh                 # every finished seed-0 run (2 x 10 h chain each)
+    CASES="adk_dims ifabp_water" ./jeanzay/train/submit_heldout.sh
+    ./jeanzay/train/status.sh                         # progress (bottom section)
+    cd MAMBA-DSR && python eval_heldout.py --report   # results table
+
+Frames without a ground-truth mesh in the prepared dataset are skipped and counted.

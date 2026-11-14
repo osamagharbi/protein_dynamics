@@ -141,6 +141,10 @@ def main():
     ap.add_argument("--metric-space", choices=["normalized", "physical"], default="normalized",
                     help="Official DSR evaluation normalizes both meshes before all metrics. "
                          "Use physical only for legacy MAMBA-vs-Diffusion reports.")
+    ap.add_argument("--num-frames", type=int, default=0,
+                    help="Extend the frame range past the checkpoint's protocol crop (e.g. future "
+                         "prediction beyond the last training frame). Times follow the same DSR "
+                         "normalization over the training range, so they exceed 1.0 there.")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--run-name", default="abeta_dsr_protocol_eval")
     ap.add_argument("--keep-reconstructions", action="store_true",
@@ -161,7 +165,8 @@ def main():
     decoder, latent_size, conf = load_stage_a_decoder(args.conf, args.case, args.stage_a_ckpt)
     mamba_model, latent_mean, latent_std = load_stage_b_model(args.stage_b_ckpt, latent_size)
     all_times = np.asarray(
-        protocol_times(int(stage_b_ckpt["full_num_frames"]), stage_b_ckpt["train_frame_indices"]),
+        protocol_times(max(int(stage_b_ckpt["full_num_frames"]), args.num_frames),
+                       stage_b_ckpt["train_frame_indices"]),
         dtype=np.float32,
     )
 

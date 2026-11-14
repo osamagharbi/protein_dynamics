@@ -16,6 +16,7 @@ be requested separately with an explicit frame list.
 import argparse
 import csv
 import json
+import math
 import re
 import subprocess
 import sys
@@ -29,6 +30,11 @@ DSR_DIR = ROOT.parent / "DSR"
 STAGE_DIR = DSR_DIR / "datasets" / "mamba_paper_views"
 CONFIG_DIR = ROOT / "exp" / "paper_configs"
 CASES = paper_cases(ROOT.parent, DSR_DIR)
+
+
+def finite_mean(values) -> float:
+    values = [v for v in values if math.isfinite(v)]
+    return sum(values) / len(values) if values else float("nan")
 
 
 def obj_indices(path: Path) -> list[int]:
@@ -269,9 +275,11 @@ def main():
                     "protocol_frames": full_count,
                     "train_frames": len(train_indices),
                     "metric_space": "normalized",
-                    "iou_mean": sum(row["iou_mean"] for row in valid) / len(valid),
-                    "chamfer_mean": sum(row["chamfer_mean"] for row in valid) / len(valid),
-                    "normal_consistency_mean": sum(row["normal_consistency_mean"] for row in valid) / len(valid),
+                    # nan-robust means: a GT frame with degenerate normals gives NC = nan
+                    "iou_mean": finite_mean(row["iou_mean"] for row in valid),
+                    "chamfer_mean": finite_mean(row["chamfer_mean"] for row in valid),
+                    "normal_consistency_mean": finite_mean(row["normal_consistency_mean"] for row in valid),
+                    "nc_frames_nan": sum(not math.isfinite(row["normal_consistency_mean"]) for row in valid),
                     "stage_a": str(stage_a),
                     "stage_b": str(stage_b),
                 })

@@ -44,7 +44,9 @@ def log_progress(name):
 def n_cached(d):
     return len(list((d / "frame_results").glob("frame_*.json"))) if (d / "frame_results").is_dir() else 0
 
-names = sorted({p.name for base in (state, logs) if base.is_dir() for p in base.iterdir() if p.is_dir()})
+all_names = sorted({p.name for base in (state, logs) if base.is_dir() for p in base.iterdir() if p.is_dir()})
+names = [n for n in all_names if not n.startswith("heldout_")]
+heldout = [n for n in all_names if n.startswith("heldout_")]
 hdr = f"{'run':34s} {'phase':9s} {'stage A':>15s} {'s/ep':>6s} {'A left':>7s} {'eval':>9s} {'jobs R/PD':>9s}  result"
 print(hdr); print("-" * len(hdr))
 totals = {"DONE": 0, "FAILED": 0, "active": 0, "waiting": 0}
@@ -111,6 +113,17 @@ for name in names:
 print(f"\n{totals['DONE']} done, {totals['active']} running, {totals['waiting']} waiting in queue, "
       f"{totals['FAILED']} failed   |   * = between chain links   STALLED = unfinished with no job left "
       f"(resubmit)   'A left' = Stage-A hours at current speed")
+if heldout:
+    print("\nheld-out evaluation (results: cd MAMBA-DSR && python eval_heldout.py --report)")
+    for name in heldout:
+        q = queue.get(name, {"RUNNING": 0, "PENDING": 0})
+        rest = name[len("heldout_"):]
+        tag = re.search(r"(_s\d+)?$", rest).group(0)
+        case = rest[: len(rest) - len(tag)] if tag else rest
+        n = n_cached(recon / f"MAMBA-DSR_{case}_{case}_paper_mamba_heldout{tag}")
+        ph = ("DONE" if (state / name / "DONE").exists() else "running" if q["RUNNING"]
+              else "queued" if q["PENDING"] else "STALLED")
+        print(f"  {name:34s} {ph:8s} frames evaluated {n:4d}   jobs R/PD {q['RUNNING']}/{q['PENDING']}")
 for name in names:
     f = state / name / "FAILED"
     if f.exists():
