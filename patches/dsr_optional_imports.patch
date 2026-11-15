@@ -1,0 +1,24 @@
+diff --git a/runner_igr_t.py b/runner_igr_t.py
+index 28411b6..61c41df 100644
+--- a/runner_igr_t.py
++++ b/runner_igr_t.py
+@@ -22,11 +22,17 @@ import scipy.io as scio
+ import torch
+ from pyhocon import ConfigFactory
+ from torch.utils.data import DataLoader
+-import GPUtil
++try:  # optional: used only for --gpu auto; not installed on every cluster
++    import GPUtil
++except ImportError:
++    GPUtil = None
+ 
+ 
+ import lib
+-import wandb
++try:  # optional: used only for --use_wandb; not installed on every cluster
++    import wandb
++except ImportError:
++    wandb = None
+ from lib.dataset import Dataset, RawDataset
+ from lib.mesh import *
+ #from lib.models.decoder_relu import *
