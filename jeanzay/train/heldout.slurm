@@ -14,15 +14,17 @@
 set -uo pipefail
 : "${CASE:?CASE not set}"
 TAG="${TAG:-}"; SEED="${SEED:-0}"; RESOLUTION="${RESOLUTION:-128}"
+METHOD="${METHOD:-mamba}"; MODE="${MODE:-extrapolate}"; NAME="${NAME:-heldout_${CASE}${TAG}}"
 REPO="${REPO:-$SLURM_SUBMIT_DIR}"
-STATE_DIR="$REPO/jeanzay/train/state/heldout_${CASE}${TAG}"; mkdir -p "$STATE_DIR"
+STATE_DIR="$REPO/jeanzay/train/state/$NAME"; mkdir -p "$STATE_DIR"
 [ -e "$STATE_DIR/DONE" ] && { echo "[$CASE] held-out evaluation already complete"; exit 0; }
 
 source "$REPO/jeanzay/train_env/env_train.sh"
 cd "$REPO/MAMBA-DSR"
-echo "[$(date +%F' '%T)] job $SLURM_JOB_ID on $(hostname): held-out eval CASE=$CASE TAG=$TAG"
+echo "[$(date +%F' '%T)] job $SLURM_JOB_ID on $(hostname): held-out eval CASE=$CASE METHOD=$METHOD MODE=$MODE TAG=$TAG"
+EXTRA=(); [ "$METHOD" = mamba ] && EXTRA=(--tag="$TAG" --future-mode="$MODE")
 timeout --signal=TERM "$(( ${WALL_MIN:-600} - 5 ))m" \
-  python eval_heldout.py --only "$CASE" --tag "$TAG" --seed "$SEED" --resolution "$RESOLUTION"
+  python eval_heldout.py --only "$CASE" --method "$METHOD" --seed "$SEED" --resolution "$RESOLUTION" ${EXTRA[@]+"${EXTRA[@]}"}
 RC=$?
 case $RC in
   0)   date +%F' '%T > "$STATE_DIR/DONE"; echo "[$CASE] held-out COMPLETE" ;;

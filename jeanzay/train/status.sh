@@ -118,9 +118,13 @@ if heldout:
     for name in heldout:
         q = queue.get(name, {"RUNNING": 0, "PENDING": 0})
         rest = name[len("heldout_"):]
-        tag = re.search(r"(_s\d+)?$", rest).group(0)
-        case = rest[: len(rest) - len(tag)] if tag else rest
-        n = n_cached(recon / f"MAMBA-DSR_{case}_{case}_paper_mamba_heldout{tag}")
+        if rest.startswith("dsr_"):
+            case = rest[len("dsr_"):]
+            n = n_cached(recon / f"DSR_{case}_{case}_paper_heldout")
+        else:
+            m = re.fullmatch(r"(.+?)(_s\d+)?(_hold_t|_hold_all)?", rest)
+            case, tag, mode = m.group(1), m.group(2) or "", m.group(3) or ""
+            n = n_cached(recon / f"MAMBA-DSR_{case}_{case}_paper_mamba_heldout{tag}{mode}")
         ph = ("DONE" if (state / name / "DONE").exists() else "running" if q["RUNNING"]
               else "queued" if q["PENDING"] else "STALLED")
         print(f"  {name:34s} {ph:8s} frames evaluated {n:4d}   jobs R/PD {q['RUNNING']}/{q['PENDING']}")

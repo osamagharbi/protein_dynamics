@@ -40,3 +40,9 @@ say which), and reference baselines that copy the nearest / last training frame.
     cd MAMBA-DSR && python eval_heldout.py --report   # results table
 
 Frames without a ground-truth mesh in the prepared dataset are skipped and counted.
+
+    METHOD=dsr ./jeanzay/train/submit_heldout.sh      # DSR baseline, same frames (after its training is DONE)
+    MODE=hold_t ./jeanzay/train/submit_heldout.sh     # diagnostic, future frames: decoder time held at t=1
+    MODE=hold_all ./jeanzay/train/submit_heldout.sh   # diagnostic: decoder time AND Mamba latent held at t=1
+
+`--report` merges every method into one table per dataset.

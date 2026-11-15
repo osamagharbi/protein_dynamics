@@ -49,11 +49,15 @@ RECON_ROOT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file
 
 def evaluate_frame(decoder, mamba_model, latent_mean, latent_std,
                    conf, frame_index, target_t, gt_path, out_dir, num_samples,
-                   resolution, metric_space):
+                   resolution, metric_space, clamp_latent_time=None, clamp_decoder_time=None):
+    # Diagnostics for frames past the training range (t > 1): optionally hold the time
+    # given to the Mamba model (latent) and/or to the decoder at a fixed value.
+    latent_t = target_t if clamp_latent_time is None else min(target_t, clamp_latent_time)
+    decoder_t = target_t if clamp_decoder_time is None else min(target_t, clamp_decoder_time)
     os.makedirs(out_dir, exist_ok=True)
     obj_dir = os.path.join(out_dir, "obj")
     os.makedirs(obj_dir, exist_ok=True)
-    t_batch = torch.full((num_samples,), float(target_t), device="cuda")
+    t_batch = torch.full((num_samples,), float(latent_t), device="cuda")
     with torch.no_grad():
         z = mamba_model(t_batch) * latent_std + latent_mean
 
@@ -70,7 +74,7 @@ def evaluate_frame(decoder, mamba_model, latent_mean, latent_std,
                 epoch=0,
                 decoder=decoder,
                 latent=z[sample_index:sample_index + 1],
-                t=torch.tensor([target_t], device="cuda"),
+                t=torch.tensor([decoder_t], device="cuda"),
                 shapename=shapename,
                 resolution=resolution,
                 connected=False,
@@ -145,6 +149,10 @@ def main():
                     help="Extend the frame range past the checkpoint's protocol crop (e.g. future "
                          "prediction beyond the last training frame). Times follow the same DSR "
                          "normalization over the training range, so they exceed 1.0 there.")
+    ap.add_argument("--clamp-latent-time", type=float, default=None,
+                    help="Diagnostic: time fed to the Mamba model is min(t, value).")
+    ap.add_argument("--clamp-decoder-time", type=float, default=None,
+                    help="Diagnostic: time fed to the decoder is min(t, value).")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--run-name", default="abeta_dsr_protocol_eval")
     ap.add_argument("--keep-reconstructions", action="store_true",
@@ -194,6 +202,9 @@ def main():
     fingerprint = {"stage_b_ckpt": os.path.abspath(args.stage_b_ckpt), "stage_b_mtime": b_stat.st_mtime,
                    "stage_b_size": b_stat.st_size, "resolution": args.resolution,
                    "metric_space": args.metric_space, "num_samples": args.num_samples, "seed": args.seed}
+    if args.clamp_latent_time is not None or args.clamp_decoder_time is not None:
+        fingerprint.update(clamp_latent_time=args.clamp_latent_time,
+                           clamp_decoder_time=args.clamp_decoder_time)
     results = []
     for frame_index in frame_indices:
         cache_path = os.path.join(cache_dir, f"frame_{frame_index:05d}.json")
@@ -210,7 +221,7 @@ def main():
             decoder, mamba_model, latent_mean, latent_std,
             conf, frame_index, all_times[frame_index], gt_path,
             os.path.join(root, f"frame_{frame_index:03d}"), args.num_samples,
-            args.resolution, args.metric_space,
+            args.resolution, args.metric_space, args.clamp_latent_time, args.clamp_decoder_time,
         )
         results.append(result)
         with open(cache_path + ".tmp", "w") as handle:
