@@ -43,6 +43,24 @@ Frames without a ground-truth mesh in the prepared dataset are skipped and count
 
     METHOD=dsr ./jeanzay/train/submit_heldout.sh      # DSR baseline, same frames (after its training is DONE)
     MODE=hold_t ./jeanzay/train/submit_heldout.sh     # diagnostic, future frames: decoder time held at t=1
+    MODE=hold_z ./jeanzay/train/submit_heldout.sh     # diagnostic: Mamba latent held at t=1, decoder time free
     MODE=hold_all ./jeanzay/train/submit_heldout.sh   # diagnostic: decoder time AND Mamba latent held at t=1
+    MODE=lerp ./jeanzay/train/submit_heldout.sh       # ablation, interpolation: Stage-A codes linearly
+                                                      #   interpolated, no Stage B ("code-lerp")
 
-`--report` merges every method into one table per dataset.
+`--report` merges every method into one table per dataset, then prints mean +- sd over
+seeds (training frames and held-out) and paired per-frame comparisons (MAMBA-DSR vs DSR,
+vs code-lerp, vs copy baselines; Wilcoxon signed-rank) plus one across-dataset line per pair.
+Re-submitting is cheap: evaluations with a DONE marker exit at once.
+
+## DSR baseline with more seeds
+
+Upstream DSR never seeds its RNGs; training now goes through `MAMBA-DSR/dsr_seeded.py`,
+which seeds Python/NumPy/PyTorch and runs the unmodified `runner_igr_t.py`. Extra seeds
+get their own directories (`DSR/exp/dsr_paper/<case>_s1`, `dsr_<case>_s1.conf`):
+
+    METHOD=dsr SEED=1 CASES="adk_dims adk_froda ifabp_water" ./jeanzay/train/submit.sh
+    METHOD=dsr SEED=1 ./jeanzay/train/submit_heldout.sh      # after those are DONE
+
+The seed-0 DSR runs were trained before this wrapper existed (unseeded), which is an
+equally valid random draw.

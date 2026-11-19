@@ -65,7 +65,7 @@ if [ "$METHOD" = mamba ]; then
 elif [ "$METHOD" = dsr ]; then
   # DSR checkpoints every 200 epochs; a link stopped by the timeout resumes from there.
   timeout --signal=TERM "$(( LEFT - 5 ))m" \
-    python run_dsr_paper.py --gpu 0 --only "$CASE" --resume --seed "$SEED" \
+    python run_dsr_paper.py --gpu 0 --only "$CASE" --resume --seed "$SEED" --tag "$TAG" \
       --epochs "$STAGE_A_EPOCHS" --resolution "$RESOLUTION"
   RC=$?
 else

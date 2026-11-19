@@ -47,9 +47,26 @@ from sample import load_stage_a_decoder, load_stage_b_model  # noqa: E402
 RECON_ROOT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "reconstructions")
 
 
+def lerp_code(train_indices, codes, frame_index):
+    """Linear interpolation of the Stage-A codes of the training frames around frame_index
+    (row k of the code table belongs to the k-th sorted training frame)."""
+    import bisect
+    if frame_index <= train_indices[0]:
+        return codes[0]
+    if frame_index >= train_indices[-1]:
+        return codes[-1]
+    hi = bisect.bisect_left(train_indices, frame_index)
+    if train_indices[hi] == frame_index:
+        return codes[hi]
+    a, b = train_indices[hi - 1], train_indices[hi]
+    w = (frame_index - a) / (b - a)
+    return (1.0 - w) * codes[hi - 1] + w * codes[hi]
+
+
 def evaluate_frame(decoder, mamba_model, latent_mean, latent_std,
                    conf, frame_index, target_t, gt_path, out_dir, num_samples,
-                   resolution, metric_space, clamp_latent_time=None, clamp_decoder_time=None):
+                   resolution, metric_space, clamp_latent_time=None, clamp_decoder_time=None,
+                   latent_override=None):
     # Diagnostics for frames past the training range (t > 1): optionally hold the time
     # given to the Mamba model (latent) and/or to the decoder at a fixed value.
     latent_t = target_t if clamp_latent_time is None else min(target_t, clamp_latent_time)
@@ -57,9 +74,12 @@ def evaluate_frame(decoder, mamba_model, latent_mean, latent_std,
     os.makedirs(out_dir, exist_ok=True)
     obj_dir = os.path.join(out_dir, "obj")
     os.makedirs(obj_dir, exist_ok=True)
-    t_batch = torch.full((num_samples,), float(latent_t), device="cuda")
-    with torch.no_grad():
-        z = mamba_model(t_batch) * latent_std + latent_mean
+    if latent_override is not None:      # ablation: latent given directly (no Mamba model)
+        z = latent_override.to("cuda").reshape(1, -1).expand(num_samples, -1)
+    else:
+        t_batch = torch.full((num_samples,), float(latent_t), device="cuda")
+        with torch.no_grad():
+            z = mamba_model(t_batch) * latent_std + latent_mean
 
     scale = conf.get_float("dataset.s")
     translate = conf.get_float("dataset.t")
@@ -153,6 +173,10 @@ def main():
                     help="Diagnostic: time fed to the Mamba model is min(t, value).")
     ap.add_argument("--clamp-decoder-time", type=float, default=None,
                     help="Diagnostic: time fed to the decoder is min(t, value).")
+    ap.add_argument("--latent-source", choices=["mamba", "lerp"], default="mamba",
+                    help="lerp = ablation without Stage B: linear interpolation of the Stage-A codes "
+                         "of the two neighbouring training frames (nearest code outside the range); "
+                         "the decoder still gets the frame's true time.")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--run-name", default="abeta_dsr_protocol_eval")
     ap.add_argument("--keep-reconstructions", action="store_true",
@@ -205,6 +229,17 @@ def main():
     if args.clamp_latent_time is not None or args.clamp_decoder_time is not None:
         fingerprint.update(clamp_latent_time=args.clamp_latent_time,
                            clamp_decoder_time=args.clamp_decoder_time)
+    lerp = None
+    if args.latent_source == "lerp":
+        fingerprint["latent_source"] = "lerp"
+        a_stat = os.stat(args.stage_a_ckpt)
+        fingerprint.update(stage_a_mtime=a_stat.st_mtime, stage_a_size=a_stat.st_size)
+        lerp = (sorted(stage_a_ckpt["train_frame_indices"]),
+                stage_a_ckpt["latent_codes"]["weight"].float())
+        if lerp[0] != list(stage_a_ckpt["train_frame_indices"]):
+            raise RuntimeError("Stage-A train_frame_indices are not sorted; code rows would be misaligned")
+        if lerp[1].shape[0] != len(lerp[0]):
+            raise RuntimeError("Stage-A latent table size does not match the training-frame list")
     results = []
     for frame_index in frame_indices:
         cache_path = os.path.join(cache_dir, f"frame_{frame_index:05d}.json")
@@ -222,6 +257,7 @@ def main():
             conf, frame_index, all_times[frame_index], gt_path,
             os.path.join(root, f"frame_{frame_index:03d}"), args.num_samples,
             args.resolution, args.metric_space, args.clamp_latent_time, args.clamp_decoder_time,
+            latent_override=None if lerp is None else lerp_code(*lerp, frame_index),
         )
         results.append(result)
         with open(cache_path + ".tmp", "w") as handle:
@@ -256,7 +292,8 @@ def main():
         "metric_space": args.metric_space,
         "num_samples": args.num_samples,
         "include_training_frames": args.include_training_frames,
-        "architecture": "bidirectional_mamba_direct_latent_regression",
+        "architecture": ("stage_a_code_linear_interpolation" if lerp is not None
+                         else "bidirectional_mamba_direct_latent_regression"),
         "stage_a_ckpt": args.stage_a_ckpt,
         "stage_b_ckpt": args.stage_b_ckpt,
         "results": results,

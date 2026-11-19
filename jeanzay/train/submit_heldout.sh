@@ -8,9 +8,13 @@
 #     CASES="adk_dims ifabp_water" ./jeanzay/train/submit_heldout.sh
 #     SEED=1 ./jeanzay/train/submit_heldout.sh              # runs trained with SEED=1 (_s1)
 #     METHOD=dsr ./jeanzay/train/submit_heldout.sh          # every finished DSR baseline run
+#     METHOD=dsr SEED=1 ./jeanzay/train/submit_heldout.sh   # DSR runs trained with SEED=1
 #     MODE=hold_t ./jeanzay/train/submit_heldout.sh         # diagnostic: decoder time held at t=1
+#     MODE=hold_z ./jeanzay/train/submit_heldout.sh         # diagnostic: Mamba latent held at t=1
 #     MODE=hold_all ./jeanzay/train/submit_heldout.sh       # diagnostic: decoder time + latent held
+#     MODE=lerp ./jeanzay/train/submit_heldout.sh           # ablation: interpolate Stage-A codes, no Stage B
 #     DRY=1 ./jeanzay/train/submit_heldout.sh               # print the sbatch commands only
+#  Already-finished evaluations are skipped (DONE marker), so re-running is cheap.
 #  Results:  cd MAMBA-DSR && python eval_heldout.py --report
 # ===========================================================================
 set -euo pipefail
@@ -19,7 +23,7 @@ REPO="$(cd "$HERE/../.." && pwd)"
 METHOD="${METHOD:-mamba}"; MODE="${MODE:-extrapolate}"
 SEED="${SEED:-0}"; NCHAIN="${NCHAIN:-2}"; QOS="${QOS:-qos_gpu-t3}"; TIME="${TIME:-10:00:00}"
 TAG=""; [ "$SEED" != 0 ] && TAG="_s$SEED"
-if [ "$METHOD" = dsr ]; then TAG=""; MODE=extrapolate; fi
+if [ "$METHOD" = dsr ]; then MODE=extrapolate; fi
 SUFFIX=""; [ "$MODE" != extrapolate ] && SUFFIX="_$MODE"
 wall_min() { IFS=: read -r h m _ <<<"$1"; echo $(( 10#$h * 60 + 10#$m )); }
 
@@ -35,7 +39,7 @@ fi
 [ -n "$CASES" ] || { echo "no finished training runs found"; exit 1; }
 
 for CASE in $CASES; do
-  if [ "$METHOD" = dsr ]; then NAME="heldout_dsr_${CASE}"; else NAME="heldout_${CASE}${TAG}${SUFFIX}"; fi
+  if [ "$METHOD" = dsr ]; then NAME="heldout_dsr_${CASE}${TAG}"; else NAME="heldout_${CASE}${TAG}${SUFFIX}"; fi
   LOGDIR="$REPO/jeanzay/train/logs/$NAME"; mkdir -p "$LOGDIR"
   DEP=""; IDS=()
   for ((i = 1; i <= NCHAIN; i++)); do

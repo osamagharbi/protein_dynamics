@@ -4,6 +4,11 @@
 This is the control experiment for MAMBA-DSR. It uses the original
 ``DSR/runner_igr_t.py`` and only the selected train-view symlinks, then uses
 the shared normalized evaluator so DSR and MAMBA-DSR metrics are identical.
+
+Seeds: upstream DSR never sets a random seed, so training goes through
+dsr_seeded.py, which seeds Python/NumPy/PyTorch with --seed and then runs the
+unmodified runner_igr_t.py. --tag (e.g. _s1) keeps a second seed's checkpoints,
+config and evaluation apart from the first (exp/dsr_paper/<case><tag>/).
 """
 
 import argparse
@@ -25,11 +30,11 @@ from run_multicase import (
 )
 
 
-def make_dsr_config(case, spec, train_view, full_count, train_count, scale, translate, epochs):
+def make_dsr_config(case, spec, train_view, full_count, train_count, scale, translate, epochs, tag=""):
     base = (DSR_DIR / "confs" / "abeta_res128.conf").read_text()
     base = base.replace(
         "base_exp_dir = ./exp/CASE_NAME/igrt_debug_sphere",
-        f"base_exp_dir = ./exp/dsr_paper/{case}",
+        f"base_exp_dir = ./exp/dsr_paper/{case}{tag}",
     )
     base = re.sub(r"data_dir\s*=.*", f"data_dir = {train_view}", base, count=1)
     base = re.sub(r"^\s*s\s*=.*$", f"    s = {scale:.12f}", base, count=1, flags=re.MULTILINE)
@@ -39,16 +44,16 @@ def make_dsr_config(case, spec, train_view, full_count, train_count, scale, tran
     base = re.sub(r"train_frame_interval\s*=.*", f"train_frame_interval = {spec.train_step}", base, count=1)
     base = re.sub(r"reconstruct_frame_per_seq\s*=.*", f"reconstruct_frame_per_seq = [{full_count}]", base, count=1)
     base = re.sub(r"latent_size\s*=.*", "latent_size = 192", base, count=1)
-    path = CONFIG_DIR / f"dsr_{case}.conf"
+    path = CONFIG_DIR / f"dsr_{case}{tag}.conf"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(base)
     return path
 
 
-def drop_empty_runs(case):
+def drop_empty_runs(case, tag=""):
     """DSR --is_continue resumes the newest timestamp dir; one killed before its
     first checkpoint would make that load fail, so remove such dirs."""
-    root = DSR_DIR / "exp" / "dsr_paper" / case
+    root = DSR_DIR / "exp" / "dsr_paper" / f"{case}{tag}"
     if root.is_dir():
         for run_dir in root.iterdir():
             if run_dir.is_dir() and not (run_dir / "checkpoints" / "ckpt_latest.pth").is_file():
@@ -57,8 +62,8 @@ def drop_empty_runs(case):
                 shutil.rmtree(run_dir)
 
 
-def latest_checkpoint(case):
-    root = DSR_DIR / "exp" / "dsr_paper" / case
+def latest_checkpoint(case, tag=""):
+    root = DSR_DIR / "exp" / "dsr_paper" / f"{case}{tag}"
     candidates = list(root.glob("*/checkpoints/ckpt_latest.pth"))
     if not candidates:
         raise FileNotFoundError(f"no DSR checkpoint found under {root}")
@@ -70,7 +75,9 @@ def main():
     ap.add_argument("--gpu", default="0")
     ap.add_argument("--epochs", type=int, default=4000)
     ap.add_argument("--resolution", type=int, default=128)
-    ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--seed", type=int, default=0,
+                    help="Seeds DSR training (via dsr_seeded.py) and the evaluator.")
+    ap.add_argument("--tag", default="", help="Run-name suffix for extra seeds, e.g. _s1.")
     ap.add_argument("--only", nargs="*")
     ap.add_argument("--allow-truncated-local-data", action="store_true")
     ap.add_argument("--dry-run", action="store_true",
@@ -99,32 +106,34 @@ def main():
         ensure_gt_link(spec)
         config = make_dsr_config(
             case, spec, train_view, full_count, len(train_indices),
-            scale, translate, args.epochs,
+            scale, translate, args.epochs, args.tag,
         )
         print(
-            f"[{case}] available={available_count} protocol_frames={full_count} "
+            f"[{case}{args.tag}] available={available_count} protocol_frames={full_count} "
             f"train={len(train_indices)} ({spec.note})",
             flush=True,
         )
         if args.dry_run:
             continue
         try:
-            trained = ckpt_epoch(latest_checkpoint(case)) == args.epochs
+            trained = ckpt_epoch(latest_checkpoint(case, args.tag)) == args.epochs
         except FileNotFoundError:
             trained = False
         if not (args.resume and trained):
             if args.resume:
-                drop_empty_runs(case)
+                drop_empty_runs(case, args.tag)
             subprocess.run(
-                [python, "runner_igr_t.py", "--conf", str(config), "--mode", "train",
+                [python, str(ROOT / "dsr_seeded.py"), str(args.seed),
+                 "runner_igr_t.py", "--conf", str(config), "--mode", "train",
                  "--case", case, "--gpu", args.gpu, *(["--is_continue"] if args.resume else [])],
                 cwd=DSR_DIR,
                 check=True,
             )
         else:
             print(f"[{case}] DSR training complete ({args.epochs} epochs) -- skipped", flush=True)
-        ckpt = latest_checkpoint(case)
-        metrics = ROOT.parent / "reconstructions" / f"DSR_{case}_{case}_paper_train_eval" / "metrics.json"
+        ckpt = latest_checkpoint(case, args.tag)
+        run_name = f"{case}_paper_train_eval{args.tag}"
+        metrics = ROOT.parent / "reconstructions" / f"DSR_{case}_{run_name}" / "metrics.json"
         if args.resume and metrics.is_file() and metrics.stat().st_mtime > ckpt.stat().st_mtime:
             print(f"[{case}] DSR evaluation complete -- skipped", flush=True)
             continue
@@ -135,7 +144,7 @@ def main():
                 "--conf", str(config), "--case", case, "--gt-case", spec.gt_case,
                 "--frame-indices", index_text, "--train-indices", index_text,
                 "--full-num-frames", str(full_count), "--resolution", str(args.resolution),
-                "--seed", str(args.seed), "--run-name", f"{case}_paper_train_eval",
+                "--seed", str(args.seed), "--run-name", run_name,
             ],
             cwd=ROOT,
             check=True,

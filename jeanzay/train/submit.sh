@@ -12,6 +12,7 @@
 #     METHOD=dsr CASES=adk_equilibrium ./jeanzay/train/submit.sh   # official DSR baseline
 #     SMOKE=1 CASES=adk_dims ./jeanzay/train/submit.sh  # 30-min qos_gpu-dev plumbing test
 #     SEED=1 ./jeanzay/train/submit.sh                  # second seed (run names get _s1)
+#     METHOD=dsr SEED=1 CASES="adk_dims" ./jeanzay/train/submit.sh  # DSR baseline, second seed
 #     DRY=1 ./jeanzay/train/submit.sh                   # print the sbatch commands only
 #
 #  Env: CASES, METHOD (mamba|dsr), SEED, NCHAIN (default 4), CONSTRAINT (e.g. v100-32g),
@@ -45,7 +46,7 @@ fi
 
 echo "[check] validating data + building train views (dry run)"
 ( cd "$REPO/MAMBA-DSR" && if [ "$METHOD" = dsr ]; then
-    python run_dsr_paper.py --only $CASES --dry-run
+    python run_dsr_paper.py --only $CASES --tag "$TAG" --dry-run
   else
     python run_multicase.py --only $CASES --dry-run
   fi )

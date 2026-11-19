@@ -86,13 +86,13 @@ for name in names:
             res = (f"IoU {float(r['iou_mean']):.4f}  CD {float(r['chamfer_mean']):.6f}  "
                    f"NC {float(r['normal_consistency_mean']):.4f}")
     else:
-        cks = sorted((dexp / case).glob("*/checkpoints/ckpt_latest.pth"), key=lambda p: p.stat().st_mtime)
+        cks = sorted((dexp / f"{case}{tag}").glob("*/checkpoints/ckpt_latest.pth"), key=lambda p: p.stat().st_mtime)
         ck = load(cks[-1]) if cks else None
         if ck:
             ep = ck.get("epoch", 0)
             a_txt, phase = f"{ep}/4000 {100 * ep / 4000:3.0f}%", "DSR train"
             if ep >= 4000: phase = "eval"
-        ev_dir = recon / f"DSR_{case}_{case}_paper_train_eval"
+        ev_dir = recon / f"DSR_{case}_{case}_paper_train_eval{tag}"
         if (ev_dir / "frame_results").is_dir():
             ev_txt = f"{n_cached(ev_dir)}"
         m = ev_dir / "metrics.json"
@@ -119,10 +119,11 @@ if heldout:
         q = queue.get(name, {"RUNNING": 0, "PENDING": 0})
         rest = name[len("heldout_"):]
         if rest.startswith("dsr_"):
-            case = rest[len("dsr_"):]
-            n = n_cached(recon / f"DSR_{case}_{case}_paper_heldout")
+            m = re.fullmatch(r"(.+?)(_s\d+)?", rest[len("dsr_"):])
+            case, tag = m.group(1), m.group(2) or ""
+            n = n_cached(recon / f"DSR_{case}_{case}_paper_heldout{tag}")
         else:
-            m = re.fullmatch(r"(.+?)(_s\d+)?(_hold_t|_hold_all)?", rest)
+            m = re.fullmatch(r"(.+?)(_s\d+)?(_hold_t|_hold_z|_hold_all|_lerp)?", rest)
             case, tag, mode = m.group(1), m.group(2) or "", m.group(3) or ""
             n = n_cached(recon / f"MAMBA-DSR_{case}_{case}_paper_mamba_heldout{tag}{mode}")
         ph = ("DONE" if (state / name / "DONE").exists() else "running" if q["RUNNING"]
