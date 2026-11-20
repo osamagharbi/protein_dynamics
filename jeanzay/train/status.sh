@@ -44,10 +44,21 @@ def log_progress(name):
 def n_cached(d):
     return len(list((d / "frame_results").glob("frame_*.json"))) if (d / "frame_results").is_dir() else 0
 
+def flow_log(name):
+    """(stage, step, total, s/step) of the newest MAMBA-Flow training line in the run's logs."""
+    outs = sorted((logs / name).glob("*.out"), key=lambda p: p.stat().st_mtime, reverse=True) \
+        if (logs / name).is_dir() else []
+    for o in outs:
+        hits = re.findall(r"\[(shape|dynamics) (\d+)/(\d+)\].*?([\d.]+) s/step", o.read_text(errors="replace"))
+        if hits:
+            st, i, n, r = hits[-1]
+            return st, int(i), int(n), float(r)
+    return None
+
 all_names = sorted({p.name for base in (state, logs) if base.is_dir() for p in base.iterdir() if p.is_dir()})
 names = [n for n in all_names if not n.startswith("heldout_")]
 heldout = [n for n in all_names if n.startswith("heldout_")]
-hdr = f"{'run':34s} {'phase':9s} {'stage A':>15s} {'s/ep':>6s} {'A left':>7s} {'eval':>9s} {'jobs R/PD':>9s}  result"
+hdr = f"{'run':34s} {'phase':9s} {'progress':>15s} {'s/it':>6s} {'left':>7s} {'eval':>9s} {'jobs R/PD':>9s}  result"
 print(hdr); print("-" * len(hdr))
 totals = {"DONE": 0, "FAILED": 0, "active": 0, "waiting": 0}
 for name in names:
@@ -59,7 +70,27 @@ for name in names:
     done, failed = (state / name / "DONE").exists(), (state / name / "FAILED").exists()
     a_txt, rate_txt, left_txt, ev_txt, res, phase = "-", "", "", "", "", "queued"
 
-    if method == "mamba":
+    if method == "flow":
+        rd = exp / "flow" / f"flow{tag}"
+        info = flow_log(name)
+        if info:
+            st, i, n, r = info
+            phase = "stage 1" if st == "shape" else "stage 2"
+            a_txt, rate_txt = f"{i}/{n} {100 * i / n:3.0f}%", f"{r:.2f}"
+            if i < n:
+                left_txt = f"{r * (n - i) / 3600:.1f}h"
+        if (rd / "shape" / "model_ema.pth").is_file():
+            phase = "stage 2" if not (rd / "dynamics" / "model_ema.pth").is_file() else "eval"
+            if phase == "stage 2" and info and info[0] == "shape":
+                a_txt, rate_txt, left_txt = "-", "", ""
+        n_ev = sum(n_cached(d) for d in recon.glob(f"MAMBA-Flow_*_flow{tag}_train"))
+        if n_ev:
+            ev_txt = str(n_ev)
+        sums = [next(csv.DictReader(f.open())) for f in (exp / "flow_summary").glob(f"*{tag}.csv")
+                if re.fullmatch(r"(.+?)" + re.escape(tag), f.stem) and (tag or not re.search(r"_s\d+$|_smoke$", f.stem))]
+        if sums:
+            res = f"IoU {sum(float(r['iou_mean']) for r in sums) / len(sums):.4f} (mean of {len(sums)} cases)"
+    elif method == "mamba":
         ck = load(exp / f"{case}{'_paper_mamba_stageA'}{tag}/checkpoints/ckpt_latest.pth")
         end = (ck or {}).get("end_iter") or (20 if tag.endswith("_smoke") else 4000)
         ep_ck = (ck or {}).get("epoch", 0)
@@ -112,13 +143,19 @@ for name in names:
 
 print(f"\n{totals['DONE']} done, {totals['active']} running, {totals['waiting']} waiting in queue, "
       f"{totals['FAILED']} failed   |   * = between chain links   STALLED = unfinished with no job left "
-      f"(resubmit)   'A left' = Stage-A hours at current speed")
+      f"(resubmit)\n'progress' / 's/it' / 'left' = epochs and s/epoch (MAMBA-DSR Stage A, DSR) or steps and s/step "
+      f"(MAMBA-Flow, current stage); 'left' = hours at the current speed")
 if heldout:
     print("\nheld-out evaluation (results: cd MAMBA-DSR && python eval_heldout.py --report)")
     for name in heldout:
         q = queue.get(name, {"RUNNING": 0, "PENDING": 0})
         rest = name[len("heldout_"):]
-        if rest.startswith("dsr_"):
+        if rest.startswith("flow_"):
+            m = re.fullmatch(r"(.+?)(_s\d+)?(_smoke)?", rest[len("flow_"):])
+            case, tag = m.group(1), (m.group(2) or "") + (m.group(3) or "")
+            d = recon / f"MAMBA-Flow_{case}_flow{tag}_heldout" / "frame_results"
+            n = len(list(d.glob("*.json"))) if d.is_dir() else 0
+        elif rest.startswith("dsr_"):
             m = re.fullmatch(r"(.+?)(_s\d+)?", rest[len("dsr_"):])
             case, tag = m.group(1), m.group(2) or ""
             n = n_cached(recon / f"DSR_{case}_{case}_paper_heldout{tag}")
@@ -128,7 +165,8 @@ if heldout:
             n = n_cached(recon / f"MAMBA-DSR_{case}_{case}_paper_mamba_heldout{tag}{mode}")
         ph = ("DONE" if (state / name / "DONE").exists() else "running" if q["RUNNING"]
               else "queued" if q["PENDING"] else "STALLED")
-        print(f"  {name:34s} {ph:8s} frames evaluated {n:4d}   jobs R/PD {q['RUNNING']}/{q['PENDING']}")
+        print(f"  {name:34s} {ph:8s} frames evaluated {n:4d}   jobs R/PD {q['RUNNING']}/{q['PENDING']}"
+              + ("   (flow: one file per split x frame + one per frame for [AE])" if rest.startswith("flow_") else ""))
 for name in names:
     f = state / name / "FAILED"
     if f.exists():

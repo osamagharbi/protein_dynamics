@@ -31,10 +31,15 @@ Methods:
                              linear interpolation of the Stage-A codes of the two neighbouring
                              training frames ("code-lerp"). If it matches MAMBA-DSR, the Mamba
                              time model adds nothing over the per-frame codes.
-  --tag _s1                  run trained with SEED=1 (MAMBA-DSR or DSR)
+  --method flow              MAMBA-Flow (run_flow.py, one model for all datasets): rows
+                             MAMBA-Flow (mean SDF of S samples), [sample] (one sample),
+                             [ref] (its latent baseline: interpolated / last context latent),
+                             [AE] (oracle: the held-out frame itself encoded + decoded)
+  --tag _s1                  run trained with SEED=1 (MAMBA-DSR, DSR or MAMBA-Flow)
 
     python eval_heldout.py --only adk_dims ifabp_water            # all splits
     python eval_heldout.py --only adk_dims --method dsr
+    python eval_heldout.py --only adk_dims --method flow
     python eval_heldout.py --only adk_dims --mode hold_t
     python eval_heldout.py --only adk_dims --mode lerp
     python eval_heldout.py --only adk_equilibrium --max-per-split 3   # quick test
@@ -68,9 +73,15 @@ MODES = {   # mode: (evaluate_protocol.py options, splits it applies to (prefix)
     "lerp": ({"latent_source": "lerp"}, "interp", "code-lerp"),
 }
 LABEL_SUFFIX = {label: ("" if m == "extrapolate" else f"_{m}") for m, (_, _, label) in MODES.items()}
+FLOW_LABELS = ["MAMBA-Flow", "MAMBA-Flow [sample]", "MAMBA-Flow [ref]", "MAMBA-Flow [AE]"]
 METHOD_ORDER = ["MAMBA-DSR", "MAMBA-DSR [hold_t]", "MAMBA-DSR [hold_z]", "MAMBA-DSR [hold_all]",
-                "code-lerp", "DSR", "copy-nearest", "copy-last"]
+                "code-lerp", "DSR", *FLOW_LABELS, "copy-nearest", "copy-last"]
 BASELINES = ("copy-nearest", "copy-last")
+# (A, B) pairs of the paired per-frame tests; "base" = copy-nearest (interp) / copy-last (future)
+PAIRS = [("MAMBA-DSR", "DSR"), ("MAMBA-DSR", "code-lerp"), ("code-lerp", "DSR"),
+         ("MAMBA-DSR", "base"), ("DSR", "base"),
+         ("MAMBA-Flow", "DSR"), ("MAMBA-Flow", "MAMBA-DSR"), ("MAMBA-Flow", "MAMBA-Flow [ref]"),
+         ("MAMBA-Flow", "base"), ("MAMBA-Flow [ref]", "base")]
 SPLIT_ORDER = ["interp", "future_step", "future_raw"]
 
 
@@ -165,9 +176,15 @@ def report():
 
 
 @functools.lru_cache(maxsize=None)
-def per_frame_iou(case, tag, method):
-    """{frame: IoU} of one held-out result, from the evaluator outputs (NaN = no mesh)."""
+def per_frame_iou(case, tag, method, split=None):
+    """{frame: IoU} of one held-out result, from the evaluator outputs (NaN = no mesh).
+    MAMBA-Flow predictions depend on the split's context, so they are looked up per split."""
     try:
+        if method in FLOW_LABELS:
+            d = RECON / f"MAMBA-Flow_{case}_flow{tag}_heldout"
+            res = json.loads((d / "metrics.json").read_text())["results"]
+            return {int(r["frame_index"]): float(r.get("iou_mean", math.nan)) for r in res
+                    if r["method"] == method and r["split"] == split}
         if method in LABEL_SUFFIX:
             d = RECON / f"MAMBA-DSR_{case}_{case}_paper_mamba_heldout{tag}{LABEL_SUFFIX[method]}"
             res = json.loads((d / "metrics.json").read_text())["results"]
@@ -216,13 +233,21 @@ def seed_tables(rows):
         m = re.fullmatch(r"DSR_(.+)_\1_paper_train_eval(_s\d+)?", f.parent.name)
         if m:
             train.setdefault(("DSR", m.group(1)), []).append(json.loads(f.read_text())["mean"]["iou"])
+    for f in (ROOT / "exp" / "flow_summary").glob("*.csv"):
+        m = re.fullmatch(r"(.+?)(_s\d+)?", f.stem)
+        if m and not f.stem.endswith("_smoke"):
+            r = next(csv.DictReader(f.open()), None)
+            if r:
+                train.setdefault(("MAMBA-Flow", m.group(1)), []).append(float(r["iou_mean"]))
     if train:
         print("\ntraining frames, IoU mean +- sd over seeds")
-        print(f"  {'case':24s} {'MAMBA-DSR':>26s} {'DSR':>26s} {'diff':>8s}")
+        print(f"  {'case':24s} {'MAMBA-DSR':>26s} {'DSR':>26s} {'diff':>8s} {'MAMBA-Flow':>26s}")
         for case in sorted({c for _, c in train}):
             a, b = train.get(("MAMBA-DSR", case), []), train.get(("DSR", case), [])
+            fl = train.get(("MAMBA-Flow", case), [])
             diff = f"{np.mean(a) - np.mean(b):+8.4f}" if a and b else ""
-            print(f"  {case:24s} {msd(a) if a else '-':>26s} {msd(b) if b else '-':>26s} {diff}")
+            print(f"  {case:24s} {msd(a) if a else '-':>26s} {msd(b) if b else '-':>26s} {diff:>8s} "
+                  f"{msd(fl) if fl else '-':>26s}")
 
     held = {}
     for r in rows:
@@ -245,35 +270,34 @@ def paired_tables(rows):
     out = []
     print("\npaired per-frame IoU comparisons (same frames; wins = frames where A > B; "
           "Wilcoxon signed-rank, two-sided; n >= 5 only)")
-    print(f"  {'run':24s} {'split':12s} {'window':6s} {'A':10s} {'B':13s} {'dIoU':>8s} {'wins':>8s} {'p':>7s}")
+    print(f"  {'run':24s} {'split':12s} {'window':6s} {'A':16s} {'B':16s} {'dIoU':>8s} {'wins':>8s} {'p':>7s}")
     for (case, tag, split, window), methods in sorted(
             groups.items(), key=lambda kv: (kv[0][0], kv[0][1], SPLIT_ORDER.index(kv[0][2]), kv[0][3])):
         base = "copy-nearest" if split == "interp" else "copy-last"
         frames = [int(f) for f in methods[next(iter(methods))]["frames"].split()]
-        for a, b in (("MAMBA-DSR", "DSR"), ("MAMBA-DSR", "code-lerp"), ("code-lerp", "DSR"),
-                     ("MAMBA-DSR", base), ("DSR", base)):
+        for a, b in PAIRS:
+            b = base if b == "base" else b
             if a not in methods or b not in methods:
                 continue
-            fa, fb = per_frame_iou(case, tag, a), per_frame_iou(case, tag, b)
+            fa, fb = per_frame_iou(case, tag, a, split), per_frame_iou(case, tag, b, split)
             pairs = [(fa[f], fb[f]) for f in frames
                      if f in fa and f in fb and np.isfinite(fa[f]) and np.isfinite(fb[f])]
             if len(pairs) < 5:
                 continue
             d, wins, n, p = paired_stats(*zip(*pairs))
             out.append({"case": case, "tag": tag, "split": split, "window": window, "a": a, "b": b, "d": d})
-            print(f"  {case + tag:24s} {split:12s} {window:6s} {a:10s} {b:13s} {d:+8.4f} {wins:4d}/{n:<3d} {fmt_p(p)}")
+            print(f"  {case + tag:24s} {split:12s} {window:6s} {a:16s} {b:16s} {d:+8.4f} {wins:4d}/{n:<3d} {fmt_p(p)}")
 
     # Across datasets: one mean difference per dataset (seed 0), Wilcoxon over datasets.
     print("\nacross datasets (seed 0, one mean dIoU per dataset; Wilcoxon over datasets)")
     for split, window in (("interp", "mid"), ("future_raw", "1-10"), ("future_step", "1-10")):
-        for a, b in (("MAMBA-DSR", "DSR"), ("MAMBA-DSR", "code-lerp"), ("code-lerp", "DSR"),
-                     ("MAMBA-DSR", "copy-nearest" if split == "interp" else "copy-last"),
-                     ("DSR", "copy-nearest" if split == "interp" else "copy-last")):
+        for a, b in PAIRS:
+            b = ("copy-nearest" if split == "interp" else "copy-last") if b == "base" else b
             ds = [o["d"] for o in out if o["tag"] == "" and o["split"] == split and o["window"] == window
                   and o["a"] == a and o["b"] == b]
             if len(ds) >= 2:
                 d, wins, n, p = paired_stats(ds, np.zeros(len(ds)))
-                print(f"  {split:12s} {window:6s} {a:10s} - {b:13s} mean {d:+.4f}   A better on {wins}/{n} "
+                print(f"  {split:12s} {window:6s} {a:16s} - {b:16s} mean {d:+.4f}   A better on {wins}/{n} "
                       f"datasets   p {fmt_p(p).strip()}")
 
 
@@ -325,12 +349,29 @@ def run_dsr(case, spec, args, frames, train, run_name):
                                "normal_consistency_mean": r["normal_consistency"]} for r in rows}, config
 
 
+def run_flow(case, args):
+    """MAMBA-Flow held-out predictions via run_flow.py --heldout (resumable frame cache).
+    Returns ({label: {(split, frame): metrics}}, (scale, translate)) or (None, None)."""
+    run_name = f"flow{args.tag}"
+    if not (ROOT / "exp" / "flow" / run_name / "dynamics" / "model_ema.pth").is_file():
+        print(f"[{case}] MAMBA-Flow run {run_name} is not trained yet -- skipped", flush=True)
+        return None, None
+    cmd = [sys.executable, "run_flow.py", "--heldout", "--only", case, "--tag", args.tag,
+           "--seed", str(args.seed), "--resolution", str(args.resolution),
+           "--max-per-split", str(args.max_per_split)] + (["--smoke"] if args.tag.endswith("_smoke") else [])
+    if subprocess.run(cmd, cwd=ROOT, env=dict(os.environ, CUDA_VISIBLE_DEVICES=args.gpu)).returncode:
+        return None, None
+    from flow.evaluate import load_heldout
+    meta = json.loads((ROOT / "exp" / "flow" / "cache" / case / "meta.json").read_text())
+    return load_heldout(case, run_name), (float(meta["s"]), float(meta["t"]))
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--only", nargs="+", choices=list(CASES))
     ap.add_argument("--report", action="store_true",
                     help="Print every exp/heldout_summary/*.csv as one table and exit.")
-    ap.add_argument("--method", choices=["mamba", "dsr"], default="mamba")
+    ap.add_argument("--method", choices=["mamba", "dsr", "flow"], default="mamba")
     ap.add_argument("--mode", "--future-mode", dest="mode", choices=list(MODES), default="extrapolate",
                     help="MAMBA-DSR diagnostic / ablation (see above).")
     ap.add_argument("--tag", default="", help="Run-name suffix used at training time, e.g. _s1.")
@@ -346,7 +387,7 @@ def main():
         return report()
     if not args.only:
         ap.error("--only is required (or --report)")
-    if args.method == "dsr" and args.mode != "extrapolate":
+    if args.method in ("dsr", "flow") and args.mode != "extrapolate":
         ap.error("--mode applies to --method mamba only")
     mode = args.mode
     mode_opts, mode_splits, mode_label = MODES[mode]
@@ -368,7 +409,10 @@ def main():
             print(f"[{case}] no held-out frame has ground truth -- skipped", flush=True)
             continue
 
-        if args.method == "dsr":
+        if args.method == "flow":
+            label, out_name = None, f"flow_{case}{args.tag}"
+            model, norm = run_flow(case, args)
+        elif args.method == "dsr":
             label, out_name = "DSR", f"dsr_{case}{args.tag}"
             model, config = run_dsr(case, spec, args, frames, train, f"{case}_paper_heldout{args.tag}")
         else:
@@ -380,9 +424,12 @@ def main():
             failed.append(case)
             continue
 
-        from pyhocon import ConfigFactory
-        conf = ConfigFactory.parse_file(str(config))
-        scale, translate = conf.get_float("dataset.s"), conf.get_float("dataset.t")
+        if args.method == "flow":
+            scale, translate = norm
+        else:
+            from pyhocon import ConfigFactory
+            conf = ConfigFactory.parse_file(str(config))
+            scale, translate = conf.get_float("dataset.s"), conf.get_float("dataset.t")
         gt_dir = DSR_DIR / "datasets" / spec.gt_case
         base_cache = RECON / "heldout_baselines" / case
 
@@ -390,7 +437,11 @@ def main():
         for split, rows in splits.items():
             for window in sorted({w for _, w, _ in rows}, key=lambda w: (len(w), w)):
                 sel = [(f, ref) for f, w, ref in rows if w == window]
-                entries = [(label, [model.get(f) for f, _ in sel])]
+                if args.method == "flow":
+                    entries = [(lbl, [model.get(lbl, {}).get((split, f)) for f, _ in sel])
+                               for lbl in FLOW_LABELS]
+                else:
+                    entries = [(label, [model.get(f) for f, _ in sel])]
                 if not args.no_baselines:
                     base = "copy-nearest" if split == "interp" else "copy-last"
                     entries.append((base, [baseline_metrics(gt_dir, f, ref, scale, translate,

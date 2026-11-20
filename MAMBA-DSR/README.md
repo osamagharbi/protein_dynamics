@@ -44,3 +44,24 @@ python evaluate_protocol.py \
 `train_diffusion.py` remains as a compatibility-named entry point and invokes
 the same direct-Mamba training code. The source `diffusion.py` module is not
 part of this project.
+
+## MAMBA-Flow (second architecture, `run_flow.py` + `flow/`)
+
+One model for all trajectories instead of one per trajectory:
+
+```text
+Stage 1  surface points --(256 anchor tokens, cross/self-attention)--> Z (256 x 32 per frame)
+         Z --(self-attention, query cross-attention)--> signed distance    [IGR loss, no time input]
+Stage 2  frames x tokens grid, flow matching: adaLN(flow time, frame spacing) ->
+         attention over tokens -> bidirectional Mamba over frames -> MLP     [context frames observed]
+```
+
+Same training frames, normalization, grid and DSR metrics as the MAMBA-DSR paper protocol;
+held-out results via `eval_heldout.py --method flow`. Local plumbing test:
+
+```bash
+python run_flow.py --smoke --only abeta_30 adk_equilibrium      # minutes; tiny model
+python eval_heldout.py --method flow --tag _smoke --only adk_equilibrium --max-per-split 2
+```
+
+Jean-Zay: see `jeanzay/train/README.md` (section MAMBA-Flow).

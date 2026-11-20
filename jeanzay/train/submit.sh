@@ -14,8 +14,11 @@
 #     SEED=1 ./jeanzay/train/submit.sh                  # second seed (run names get _s1)
 #     METHOD=dsr SEED=1 CASES="adk_dims" ./jeanzay/train/submit.sh  # DSR baseline, second seed
 #     DRY=1 ./jeanzay/train/submit.sh                   # print the sbatch commands only
+#     METHOD=flow ./jeanzay/train/submit.sh             # MAMBA-Flow: ONE chain, one model for all datasets
+#     SMOKE=1 METHOD=flow ./jeanzay/train/submit.sh     # MAMBA-Flow 30-min plumbing test (tiny model)
+#     METHOD=flow FLOW_SET="shape_steps=60000+dyn_steps=20000" ./jeanzay/train/submit.sh   # config overrides
 #
-#  Env: CASES, METHOD (mamba|dsr), SEED, NCHAIN (default 4), CONSTRAINT (e.g. v100-32g),
+#  Env: CASES, METHOD (mamba|dsr|flow), SEED, NCHAIN (default 4), CONSTRAINT (e.g. v100-32g),
 #       STAGE_A_EPOCHS (4000), STAGE_B_EPOCHS (5000), RESOLUTION (128), QOS, TIME.
 # ===========================================================================
 set -euo pipefail
@@ -47,9 +50,16 @@ fi
 echo "[check] validating data + building train views (dry run)"
 ( cd "$REPO/MAMBA-DSR" && if [ "$METHOD" = dsr ]; then
     python run_dsr_paper.py --only $CASES --tag "$TAG" --dry-run
+  elif [ "$METHOD" = flow ]; then
+    python run_flow.py --check --only $CASES --tag "$TAG"
   else
     python run_multicase.py --only $CASES --dry-run
   fi )
+
+if [ "$METHOD" = flow ]; then   # one model trained on all cases -> a single chain "flow_all<TAG>"
+  FLOW_CASES=$(echo $CASES | tr ' ' '+'); CASES=all
+  [ "${SMOKE:-0}" = 1 ] && export RESERVE_MIN=8
+fi
 
 for CASE in $CASES; do
   NAME="${METHOD}_${CASE}${TAG}"
@@ -60,7 +70,7 @@ for CASE in $CASES; do
     CMD=(sbatch --parsable --job-name="$NAME" --qos="$QOS" --time="$TIME"
          ${CONSTRAINT:+--constraint=$CONSTRAINT} $DEP
          --output="$LOGDIR/%j.out"
-         --export=ALL,CASE="$CASE",METHOD="$METHOD",SEED="$SEED",TAG="$TAG",REPO="$REPO",WALL_MIN="$(wall_min "$TIME")"
+         --export=ALL,CASE="$CASE",METHOD="$METHOD",SEED="$SEED",TAG="$TAG",REPO="$REPO",WALL_MIN="$(wall_min "$TIME")",FLOW_CASES="${FLOW_CASES:-}",FLOW_SET="${FLOW_SET:-}"
          "$HERE/train_case.slurm")
     if [ "${DRY:-0}" = 1 ]; then echo "${CMD[*]}"; JID="DRY$i"; else JID=$("${CMD[@]}"); fi
     IDS+=("$JID"); DEP="--dependency=afterany:$JID"

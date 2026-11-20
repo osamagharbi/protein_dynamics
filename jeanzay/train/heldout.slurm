@@ -1,7 +1,7 @@
 #!/bin/bash
 # ===========================================================================
 #  Held-out evaluation (interpolation + future prediction + copy baselines) of
-#  ONE trained MAMBA-DSR run. No training. Submitted by submit_heldout.sh.
+#  ONE trained run (METHOD=mamba|dsr|flow) on ONE dataset. No training. Submitted by submit_heldout.sh.
 #  Resumable: finished frames are cached, so a resubmit continues where it stopped.
 # ===========================================================================
 #SBATCH --job-name=dsr_heldout
@@ -23,6 +23,7 @@ source "$REPO/jeanzay/train_env/env_train.sh"
 cd "$REPO/MAMBA-DSR"
 echo "[$(date +%F' '%T)] job $SLURM_JOB_ID on $(hostname): held-out eval CASE=$CASE METHOD=$METHOD MODE=$MODE TAG=$TAG"
 EXTRA=(--tag="$TAG"); [ "$METHOD" = mamba ] && EXTRA+=(--mode="$MODE")
+[ "${MAX_PER_SPLIT:-0}" != 0 ] && EXTRA+=(--max-per-split="$MAX_PER_SPLIT")
 timeout --signal=TERM "$(( ${WALL_MIN:-600} - 5 ))m" \
   python eval_heldout.py --only "$CASE" --method "$METHOD" --seed "$SEED" --resolution "$RESOLUTION" "${EXTRA[@]}"
 RC=$?

@@ -64,3 +64,52 @@ get their own directories (`DSR/exp/dsr_paper/<case>_s1`, `dsr_<case>_s1.conf`):
 
 The seed-0 DSR runs were trained before this wrapper existed (unseeded), which is an
 equally valid random draw.
+
+## MAMBA-Flow (new architecture: one model for all datasets)
+
+`MAMBA-DSR/run_flow.py` + `MAMBA-DSR/flow/`. Same training frames, normalization, grid and
+metrics as MAMBA-DSR / DSR, so its numbers go straight into `eval_heldout.py --report`.
+
+* **Stage 1 - shape VAE** (`flow/nets.py: ShapeVAE`, 25M parameters): 256 fixed anchor points
+  per protein (farthest-point sampling over its training surfaces); the anchors cross-attend
+  to 8,192 surface points (Fourier position + normal) -> 6 self-attention layers -> 256 latent
+  tokens x 32 per frame. Decoder: 6 self-attention layers over the tokens, a query point
+  cross-attends to them -> signed distance. Trained on the training frames of ALL datasets
+  with DSR's IGR loss (manifold + normals + eikonal) + a small KL term. No time input.
+* **Stage 2 - dynamics** (`flow/nets.py: SpaceTimeFlow`, 18.5M parameters): flow matching over
+  short sequences of token grids (frames x 256 tokens). Each block: adaLN(flow time, frame
+  spacing) -> attention across the 256 tokens of a frame -> bidirectional Mamba across the
+  frames of each token -> MLP. Observed frames are context, the rest are generated; tasks
+  (forecast / fine forecast / interpolation) are sampled at random strides so that test-time
+  queries (midpoints, next thinned frames, next raw frames) are in the training distribution.
+  Targets are residuals from a latent baseline (interpolated / last context latent).
+* Not implemented from the design note: per-frame Kabsch superposition (prepared data keeps no
+  atom coordinates, 4/8 trajectories are already core-fitted at source, and scoring unseen
+  frames needs their original pose) and ESM conditioning (8 proteins; the context frames
+  identify the protein). Both matter for ATLAS-scale training, not for these 8 datasets.
+
+```bash
+SMOKE=1 METHOD=flow ./jeanzay/train/submit.sh        # 30-min dev-QoS plumbing test, tiny model
+./jeanzay/train/status.sh                            # row flow_all_smoke
+METHOD=flow ./jeanzay/train/submit.sh                # the real run: ONE chain "flow_all" (4 x 20 h)
+METHOD=flow SEED=1 ./jeanzay/train/submit.sh         # second seed (run flow_s1)
+METHOD=flow ./jeanzay/train/submit_heldout.sh        # after DONE: held-out eval, one job per dataset
+cd MAMBA-DSR && python eval_heldout.py --report      # MAMBA-Flow rows next to MAMBA-DSR / DSR
+```
+
+* The chain runs `cache -> shape -> encode -> dynamics -> eval` (training frames); every
+  stage resumes from its checkpoint (saved every 30 min and when the link's time budget ends;
+  exit 3 = continue in the next link). Outputs: `MAMBA-DSR/exp/flow/flow<tag>/` (`shape/`,
+  `latents/`, `dynamics/`, `config.json`, `cases.txt`), shared data cache
+  `MAMBA-DSR/exp/flow/cache/<case>/`, training-frame summary
+  `MAMBA-DSR/exp/flow_summary/<case><tag>.csv`, per-frame metrics in
+  `reconstructions/MAMBA-Flow_<case>_flow<tag>_{train,heldout}/`.
+* Config overrides go through `FLOW_SET` ('+'-joined `key=value`, dotted keys), e.g.
+  `FLOW_SET="shape_steps=60000+dyn_model.temporal=attn"` (temporal attention instead of
+  Mamba: the ablation that tests whether Mamba matters). All defaults: `DEFAULTS` in
+  `run_flow.py`; `python run_flow.py --check` prints the plan without a GPU.
+* Held-out rows: `MAMBA-Flow` (mean signed-distance field of 4 samples), `MAMBA-Flow [sample]`
+  (one sample), `MAMBA-Flow [ref]` (latent baseline only: what Stage 2 adds is the
+  difference), `MAMBA-Flow [AE]` (oracle: the held-out frame itself encoded and decoded =
+  ceiling of Stage 1; not a prediction). Paired tests include MAMBA-Flow vs DSR, vs MAMBA-DSR,
+  vs its [ref] and vs the copy baselines.

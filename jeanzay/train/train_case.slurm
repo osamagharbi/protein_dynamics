@@ -9,6 +9,9 @@
 #                             -> Stage B (bidirectional Mamba t->latent)
 #                             -> evaluation (IoU / Chamfer / NC, res 128, normalized)
 #   METHOD=dsr   : official DSR baseline (runner_igr_t.py --is_continue) + same evaluator
+#   METHOD=flow  : MAMBA-Flow, ONE model for all datasets (CASE=all; FLOW_CASES = optional
+#                  '+'-joined subset): cache -> Stage 1 shape VAE -> encode -> Stage 2 flow
+#                  matching -> training-frame evaluation (run_flow.py, every stage resumable)
 # ===========================================================================
 #SBATCH --job-name=dsr_train
 #SBATCH --account=acu@v100
@@ -68,8 +71,17 @@ elif [ "$METHOD" = dsr ]; then
     python run_dsr_paper.py --gpu 0 --only "$CASE" --resume --seed "$SEED" --tag "$TAG" \
       --epochs "$STAGE_A_EPOCHS" --resolution "$RESOLUTION"
   RC=$?
+elif [ "$METHOD" = flow ]; then
+  BUDGET=$(( LEFT - RESERVE_MIN )); [ "$BUDGET" -lt 10 ] && BUDGET=10
+  FLOW_ARGS=(--seed "$SEED" --resolution "$RESOLUTION" --stop-after-minutes "$BUDGET")
+  if [[ "$TAG" == *_smoke ]]; then FLOW_ARGS+=(--smoke --tag "${TAG%_smoke}"); else FLOW_ARGS+=(--tag "$TAG"); fi
+  [ -n "${FLOW_CASES:-}" ] && FLOW_ARGS+=(--only ${FLOW_CASES//+/ })
+  # shellcheck disable=SC2206
+  [ -n "${FLOW_SET:-}" ] && for kv in ${FLOW_SET//+/ }; do FLOW_ARGS+=(--set "$kv"); done
+  timeout --signal=TERM "$(( LEFT - 5 ))m" python run_flow.py "${FLOW_ARGS[@]}"
+  RC=$?
 else
-  echo "unknown METHOD=$METHOD (mamba|dsr)"; exit 1
+  echo "unknown METHOD=$METHOD (mamba|dsr|flow)"; exit 1
 fi
 
 case $RC in
