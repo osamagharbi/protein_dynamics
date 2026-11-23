@@ -51,7 +51,7 @@ echo "[check] validating data + building train views (dry run)"
 ( cd "$REPO/MAMBA-DSR" && if [ "$METHOD" = dsr ]; then
     python run_dsr_paper.py --only $CASES --tag "$TAG" --dry-run
   elif [ "$METHOD" = flow ]; then
-    python run_flow.py --check --only $CASES --tag "$TAG"
+    python run_flow.py --check --only $CASES --tag "$TAG" $([ "${SMOKE:-0}" = 1 ] && echo --smoke)
   else
     python run_multicase.py --only $CASES --dry-run
   fi )
