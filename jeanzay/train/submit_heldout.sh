@@ -40,7 +40,7 @@ if [ -z "${CASES:-}" ]; then   # every run whose training finished (DONE marker)
             [ -e "$d/DONE" ] || continue
             n=$(basename "$d"); n=${n#${METHOD}_}
             [[ "$n" == *_smoke ]] && continue
-            if [ -n "$TAG" ]; then [[ "$n" == *"$TAG" ]] && echo "${n%$TAG}"
+            if [ -n "$TAG" ]; then if [[ "$n" == *"$TAG" ]]; then echo "${n%$TAG}"; fi
             else [[ "$n" =~ _s[0-9]+$ ]] || echo "$n"; fi
           done)
 fi

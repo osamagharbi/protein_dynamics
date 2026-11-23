@@ -43,7 +43,7 @@ source "$REPO/jeanzay/train_env/env_train.sh" >/dev/null 2>&1
 
 if [ -z "${CASES:-}" ]; then   # every complete dataset prepared by jeanzay/data_prep
   CASES=$(cd "$REPO/MAMBA-DSR" && python run_multicase.py --list | awk '{print $1}' \
-          | while read -r c; do [ -f "$REPO/datasets/DSR_processed/$c/meta.json" ] && echo "$c"; done)
+          | while read -r c; do if [ -f "$REPO/datasets/DSR_processed/$c/meta.json" ]; then echo "$c"; fi; done)
 fi
 [ -n "$CASES" ] || { echo "no prepared datasets found under $REPO/datasets/DSR_processed"; exit 1; }
 
