@@ -170,5 +170,7 @@ if heldout:
 for name in names:
     f = state / name / "FAILED"
     if f.exists():
-        print(f"FAILED {name}: {f.read_text().strip()}  -> tail -40 {logs / name}/<newest>.out")
+        msg = f.read_text().strip()
+        jid = msg.split()[1] if msg.startswith("job ") else "<jobid>"
+        print(f"FAILED {name}: {msg}  -> tail -60 {logs / name}/{jid}.out")
 PY
