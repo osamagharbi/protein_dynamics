@@ -4,8 +4,8 @@
     cache     training frames of every case -> exp/flow/cache/<case>/ (DSR loader + normalization)
     shape     Stage 1: anchored-token shape VAE, IGR loss            -> exp/flow/<run>/shape/
     encode    latent tokens of every training frame                  -> exp/flow/<run>/latents/
-    dynamics  Stage 2: masked flow matching over space x time         -> exp/flow/<run>/dynamics/
     eval      training-frame reconstruction (DSR metrics, res 128)   -> exp/flow_summary/<case><tag>.csv
+    dynamics  Stage 2: masked flow matching over space x time         -> exp/flow/<run>/dynamics/
 Held-out frames: python eval_heldout.py --method flow --only <case>  (calls run_flow.py --heldout).
 
     python run_flow.py                                 # every prepared dataset (datasets/DSR_processed/*/meta.json)
@@ -37,7 +37,7 @@ DEFAULTS = dict(
     # Stage 2
     dyn_model=dict(width=256, heads=8, blocks=8, temporal="mamba", dropout=0.1, n_freq=8),
     dyn_steps=40_000, dyn_batch=8, dyn_lr=2e-4, dyn_wd=0.05, dyn_warmup=1000, dyn_amp=True,
-    dyn_grad_ckpt=False,
+    dyn_grad_ckpt=True,     # 16 GB V100: batch 8 x 36 frames x 256 tokens OOMs without it (~+30% time)
     tasks=dict(probs=[0.35, 0.25, 0.40], ctx_min=4, ctx_max=16, fine_ctx_max=8, horizon=20,
                interp_targets=4),
     # shared
@@ -112,8 +112,8 @@ def main():
     ap.add_argument("--tag", default="", help="run-name suffix, e.g. _s1")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--smoke", action="store_true", help="tiny model / few steps plumbing test")
-    ap.add_argument("--stages", nargs="+", default=["cache", "shape", "encode", "dynamics", "eval"],
-                    choices=["cache", "shape", "encode", "dynamics", "eval"])
+    ap.add_argument("--stages", nargs="+", default=["cache", "shape", "encode", "eval", "dynamics"],
+                    choices=["cache", "shape", "encode", "eval", "dynamics"])
     ap.add_argument("--stop-after-minutes", type=float, default=0.0)
     ap.add_argument("--set", action="append", metavar="KEY=VALUE", help="override a config value")
     ap.add_argument("--resolution", type=int, default=0)
@@ -177,6 +177,9 @@ def main():
     if "encode" in args.stages:
         from flow.train_shape import encode_latents
         encode_latents(cfg, run_dir, cases)
+    if "eval" in args.stages:      # training frames need Stage 1 only: run it before Stage 2
+        from flow.evaluate import eval_train
+        eval_train(cfg, run_dir, run_name, cases, args.tag, args.seed, cfg["eval_max_frames"])
     if "dynamics" in args.stages:
         from flow.dynamics import train_dynamics
         if deadline.reached(margin_s=600):
@@ -184,9 +187,6 @@ def main():
             return 3
         if not train_dynamics(cfg, run_dir, cases, deadline):
             return 3
-    if "eval" in args.stages:
-        from flow.evaluate import eval_train
-        eval_train(cfg, run_dir, run_name, cases, args.tag, args.seed, cfg["eval_max_frames"])
     print(f"[flow] {run_name}: all requested stages complete", flush=True)
     return 0
 

@@ -282,7 +282,7 @@ class SpaceTimeFlow(nn.Module):
                 + self.dt_emb(sinusoid(log_dt, 32, 0.5, 50.0)))
         for blk in self.blocks:
             if self.grad_checkpoint and self.training:
-                x = torch.utils.checkpoint.checkpoint(blk, x, cond, use_reentrant=False)
+                x = torch.utils.checkpoint.checkpoint(blk, x, cond, use_reentrant=True)
             else:
                 x = blk(x, cond)
         shift, scale = self.mod_out(cond)[:, None, None].chunk(2, dim=-1)

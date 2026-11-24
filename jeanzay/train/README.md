@@ -97,7 +97,10 @@ METHOD=flow ./jeanzay/train/submit_heldout.sh        # after DONE: held-out eval
 cd MAMBA-DSR && python eval_heldout.py --report      # MAMBA-Flow rows next to MAMBA-DSR / DSR
 ```
 
-* The chain runs `cache -> shape -> encode -> dynamics -> eval` (training frames); every
+* The chain runs `cache -> shape -> encode -> eval -> dynamics`; `eval` = training-frame
+  reconstruction, which needs Stage 1 only, so its IoU (status.sh `result`) is known before
+  Stage 2 starts. `cd MAMBA-DSR && python -m flow.latent_check` shows how smoothly the
+  Stage-1 latents move between consecutive training frames (CPU, seconds). Every
   stage resumes from its checkpoint (saved every 30 min and when the link's time budget ends;
   exit 3 = continue in the next link). Outputs: `MAMBA-DSR/exp/flow/flow<tag>/` (`shape/`,
   `latents/`, `dynamics/`, `config.json`, `cases.txt`), shared data cache
