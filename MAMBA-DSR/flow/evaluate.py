@@ -13,6 +13,10 @@ Held-out frames  (splits of eval_heldout.py) four predictions per frame:
                       MAMBA-Flow minus this
   MAMBA-Flow [AE]     oracle: the held-out ground truth encoded and decoded (ceiling of
                       Stage 1; uses the frame's own surface, so it is NOT a prediction)
+  MAMBA-Flow [ctx-mean]  mean latent of the context frames the prediction sees (no Stage 2)
+  MAMBA-Flow [case-mean] mean latent of ALL training frames of the protein ("average shape",
+                      no Stage 2): if MAMBA-Flow ~ this far ahead, Stage 2 learned mean
+                      reversion rather than dynamics
 """
 import csv
 import json
@@ -35,7 +39,8 @@ from run_multicase import DSR_DIR, ROOT
 RECON = ROOT.parent / "reconstructions"
 FLOW_SUMMARY = ROOT / "exp" / "flow_summary"
 LABELS = {"ens": "MAMBA-Flow", "sample": "MAMBA-Flow [sample]", "ref": "MAMBA-Flow [ref]",
-          "ae": "MAMBA-Flow [AE]"}
+          "ae": "MAMBA-Flow [AE]", "ctxmean": "MAMBA-Flow [ctx-mean]",
+          "casemean": "MAMBA-Flow [case-mean]"}
 
 
 # ----------------------------------------------------------------------------- metrics pool
@@ -204,8 +209,12 @@ def eval_train(cfg, run_dir, run_name, cases, tag, seed, max_frames=0):
 
 
 # ----------------------------------------------------------------------------- held-out frames
+def _interp_start(n, pos_a, c):
+    return int(np.clip(pos_a + 1 - c // 2, 0, n - c))
+
+
 def _interp_example(off, n, pos_a, frac, c):
-    start = int(np.clip(pos_a + 1 - c // 2, 0, n - c))
+    start = _interp_start(n, pos_a, c)
     ctx_tau = np.arange(c) - (c - 1) / 2
     return make_example(off, start + np.arange(c), ctx_tau, [pos_a - start + frac - (c - 1) / 2])
 
@@ -236,10 +245,14 @@ def eval_heldout(cfg, run_dir, run_name, case, seed, max_per_split=0):
     fp_ae = _fingerprint(run_dir, {"resolution": cfg["resolution"], "kind": "ae",
                                    "draws": cfg["encode_draws"], "n_enc": cfg["n_enc"]})
     fp_ae.pop("dynamics", None)
+    fp_base = _fingerprint(run_dir, {"resolution": cfg["resolution"], "kind": "latent-means",
+                                     "ctx_test": c_test})
+    fp_base.pop("dynamics", None)
 
     # sequences: interp = one target per sequence (context centred on it); future = all
     # targets of the split jointly after the last C training frames.
     seqs = []                                  # (split, [frames], example)
+    ctx_start = {}                             # (split, frame) -> first context position
     for split, rows in splits.items():
         if not rows:
             continue
@@ -247,17 +260,20 @@ def eval_heldout(cfg, run_dir, run_name, case, seed, max_per_split=0):
             for f, _, a in rows:
                 b = frames[pos[a] + 1]
                 seqs.append((split, [f], _interp_example(off, n, pos[a], (f - a) / (b - a), c_test)))
+                ctx_start[(split, f)] = _interp_start(n, pos[a], c_test)
         else:
             tgt = [f for f, _, _ in rows]
             ex = make_example(off, np.arange(n - c_test, n), np.arange(c_test) - (c_test - 1),
                               (np.asarray(tgt) - frames[-1]) / step)
             seqs.append((split, tgt, ex))
+            ctx_start.update({(split, f): n - c_test for f in tgt})
     print(f"[heldout] {case}: train {len(train)} frames step {step}; "
           + ", ".join(f"{k} {len(v)} (no GT {missing[k]})" for k, v in splits.items())
           + f"; {cfg['n_samples']} samples x {cfg['flow_steps']} flow steps, context {c_test}", flush=True)
 
     results = {}
     ae_results = {}
+    base_results = {}
     pool = MetricPool(cfg["metric_workers"])
     mesher = Mesher(shape, cfg["resolution"])
     gt_path = lambda f: str(spec.full_dir / f"traj_{f}.obj")
@@ -268,6 +284,9 @@ def eval_heldout(cfg, run_dir, run_name, case, seed, max_per_split=0):
             if split == "ae":
                 ae_results[f] = m["ae"]
                 write_json(cache / f"ae_{f:05d}.json", {"fingerprint": fp_ae, "metrics": m})
+            elif split.startswith("base:"):
+                base_results[(split[5:], f)] = m
+                write_json(cache / f"base_{split[5:]}_{f:05d}.json", {"fingerprint": fp_base, "metrics": m})
             else:
                 results[key] = m
                 write_json(cache / f"{split}_{f:05d}.json", {"fingerprint": fp, "metrics": m})
@@ -319,13 +338,31 @@ def eval_heldout(cfg, run_dir, run_name, case, seed, max_per_split=0):
                                          anchors[None].cuda())[0].float()
         vol = mesher.sdf((acc / cfg["encode_draws"]).cpu(), anchors, center)[0]
         pool.submit((gt_path(f), s, t, cfg["resolution"], {"ae": mesher.marching_cubes(vol)}), store(("ae", f)))
+
+    # 3) latent-mean baselines (Stage 1 only): context mean and whole-trajectory mean
+    z_all = lat["z"].float()
+    case_mesh, ctx_mesh = None, {}
+    for split, tgts, _ in seqs:
+        for f in tgts:
+            got = _read_cache(cache / f"base_{split}_{f:05d}.json", fp_base)
+            if got is not None:
+                base_results[(split, f)] = got
+                continue
+            if case_mesh is None:
+                case_mesh = mesher.marching_cubes(mesher.sdf(z_all.mean(0)[None], anchors, center)[0])
+            st = ctx_start[(split, f)]
+            if st not in ctx_mesh:
+                ctx_mesh[st] = mesher.marching_cubes(
+                    mesher.sdf(z_all[st:st + c_test].mean(0)[None], anchors, center)[0])
+            pool.submit((gt_path(f), s, t, cfg["resolution"], {"ctxmean": ctx_mesh[st], "casemean": case_mesh}),
+                        store((f"base:{split}", f)))
     pool.close()
 
     out = {label: {} for label in LABELS.values()}
     rows = []
     for split, tgts, _ in seqs:
         for f in tgts:
-            m = dict(results[(split, f)], ae=ae_results.get(f))
+            m = dict(results[(split, f)], ae=ae_results.get(f), **base_results.get((split, f), {}))
             for key, label in LABELS.items():
                 out[label][(split, f)] = m.get(key) or {}
                 rows.append({"split": split, "frame_index": f, "method": label, **(m.get(key) or {})})

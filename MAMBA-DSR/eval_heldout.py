@@ -34,7 +34,9 @@ Methods:
   --method flow              MAMBA-Flow (run_flow.py, one model for all datasets): rows
                              MAMBA-Flow (mean SDF of S samples), [sample] (one sample),
                              [ref] (its latent baseline: interpolated / last context latent),
-                             [AE] (oracle: the held-out frame itself encoded + decoded)
+                             [AE] (oracle: the held-out frame itself encoded + decoded),
+                             [ctx-mean] / [case-mean] (mean latent of the context / of all
+                             training frames: the "average shape" controls, no Stage 2)
   --tag _s1                  run trained with SEED=1 (MAMBA-DSR, DSR or MAMBA-Flow)
 
     python eval_heldout.py --only adk_dims ifabp_water            # all splits
@@ -73,7 +75,8 @@ MODES = {   # mode: (evaluate_protocol.py options, splits it applies to (prefix)
     "lerp": ({"latent_source": "lerp"}, "interp", "code-lerp"),
 }
 LABEL_SUFFIX = {label: ("" if m == "extrapolate" else f"_{m}") for m, (_, _, label) in MODES.items()}
-FLOW_LABELS = ["MAMBA-Flow", "MAMBA-Flow [sample]", "MAMBA-Flow [ref]", "MAMBA-Flow [AE]"]
+FLOW_LABELS = ["MAMBA-Flow", "MAMBA-Flow [sample]", "MAMBA-Flow [ref]", "MAMBA-Flow [ctx-mean]",
+               "MAMBA-Flow [case-mean]", "MAMBA-Flow [AE]"]
 METHOD_ORDER = ["MAMBA-DSR", "MAMBA-DSR [hold_t]", "MAMBA-DSR [hold_z]", "MAMBA-DSR [hold_all]",
                 "code-lerp", "DSR", *FLOW_LABELS, "copy-nearest", "copy-last"]
 BASELINES = ("copy-nearest", "copy-last")
@@ -81,7 +84,9 @@ BASELINES = ("copy-nearest", "copy-last")
 PAIRS = [("MAMBA-DSR", "DSR"), ("MAMBA-DSR", "code-lerp"), ("code-lerp", "DSR"),
          ("MAMBA-DSR", "base"), ("DSR", "base"),
          ("MAMBA-Flow", "DSR"), ("MAMBA-Flow", "MAMBA-DSR"), ("MAMBA-Flow", "MAMBA-Flow [ref]"),
-         ("MAMBA-Flow", "base"), ("MAMBA-Flow [ref]", "base")]
+         ("MAMBA-Flow", "base"), ("MAMBA-Flow [ref]", "base"),
+         ("MAMBA-Flow", "MAMBA-Flow [case-mean]"), ("MAMBA-Flow", "MAMBA-Flow [ctx-mean]"),
+         ("MAMBA-Flow [case-mean]", "base")]
 SPLIT_ORDER = ["interp", "future_step", "future_raw"]
 
 
@@ -161,14 +166,14 @@ def report():
     order = lambda r: (r["case"], r["tag"], SPLIT_ORDER.index(r["split"]), (len(r["window"]), r["window"]),
                        METHOD_ORDER.index(r["method"]) if r["method"] in METHOD_ORDER else 99)
     rows.sort(key=order)
-    print(f"{'run':24s} {'split':12s} {'window':6s} {'method':21s} {'n':>4s}  {'IoU':>7s}  {'CD':>9s}  {'NC':>7s}")
+    print(f"{'run':24s} {'split':12s} {'window':6s} {'method':22s} {'n':>4s}  {'IoU':>7s}  {'CD':>9s}  {'NC':>7s}")
     last = None
     for r in rows:
         run = r["case"] + r["tag"]
         if last and run != last:
             print()
         last = run
-        print(f"{run:24s} {r['split']:12s} {r['window']:6s} {r['method']:21s} {int(r['n']):4d}  "
+        print(f"{run:24s} {r['split']:12s} {r['window']:6s} {r['method']:22s} {int(r['n']):4d}  "
               f"{float(r['iou_mean']):7.4f}  {float(r['chamfer_mean']):9.6f}  {float(r['nc_mean']):7.4f}"
               + (f"  ({r['n_failed']} no mesh)" if r['n_failed'] != '0' else ''))
     seed_tables(rows)
@@ -259,7 +264,7 @@ def seed_tables(rows):
         for (case, split, window, method), v in sorted(
                 multi.items(), key=lambda kv: (kv[0][0], SPLIT_ORDER.index(kv[0][1]), kv[0][2],
                                                METHOD_ORDER.index(kv[0][3]) if kv[0][3] in METHOD_ORDER else 99)):
-            print(f"  {case:24s} {split:12s} {window:6s} {method:21s} {msd(v)}")
+            print(f"  {case:24s} {split:12s} {window:6s} {method:22s} {msd(v)}")
 
 
 def paired_tables(rows):
@@ -270,7 +275,7 @@ def paired_tables(rows):
     out = []
     print("\npaired per-frame IoU comparisons (same frames; wins = frames where A > B; "
           "Wilcoxon signed-rank, two-sided; n >= 5 only)")
-    print(f"  {'run':24s} {'split':12s} {'window':6s} {'A':16s} {'B':16s} {'dIoU':>8s} {'wins':>8s} {'p':>7s}")
+    print(f"  {'run':24s} {'split':12s} {'window':6s} {'A':22s} {'B':22s} {'dIoU':>8s} {'wins':>8s} {'p':>7s}")
     for (case, tag, split, window), methods in sorted(
             groups.items(), key=lambda kv: (kv[0][0], kv[0][1], SPLIT_ORDER.index(kv[0][2]), kv[0][3])):
         base = "copy-nearest" if split == "interp" else "copy-last"
@@ -286,7 +291,7 @@ def paired_tables(rows):
                 continue
             d, wins, n, p = paired_stats(*zip(*pairs))
             out.append({"case": case, "tag": tag, "split": split, "window": window, "a": a, "b": b, "d": d})
-            print(f"  {case + tag:24s} {split:12s} {window:6s} {a:16s} {b:16s} {d:+8.4f} {wins:4d}/{n:<3d} {fmt_p(p)}")
+            print(f"  {case + tag:24s} {split:12s} {window:6s} {a:22s} {b:22s} {d:+8.4f} {wins:4d}/{n:<3d} {fmt_p(p)}")
 
     # Across datasets: one mean difference per dataset (seed 0), Wilcoxon over datasets.
     print("\nacross datasets (seed 0, one mean dIoU per dataset; Wilcoxon over datasets)")
@@ -297,7 +302,7 @@ def paired_tables(rows):
                   and o["a"] == a and o["b"] == b]
             if len(ds) >= 2:
                 d, wins, n, p = paired_stats(ds, np.zeros(len(ds)))
-                print(f"  {split:12s} {window:6s} {a:16s} - {b:16s} mean {d:+.4f}   A better on {wins}/{n} "
+                print(f"  {split:12s} {window:6s} {a:22s} - {b:22s} mean {d:+.4f}   A better on {wins}/{n} "
                       f"datasets   p {fmt_p(p).strip()}")
 
 
@@ -459,9 +464,9 @@ def main():
             writer.writeheader()
             writer.writerows(out_rows)
         print(f"\n[{case}] held-out results -> {summary}")
-        print(f"  {'split':12s} {'window':6s} {'method':21s} {'n':>4s}  {'IoU':>7s}  {'CD':>9s}  {'NC':>7s}")
+        print(f"  {'split':12s} {'window':6s} {'method':22s} {'n':>4s}  {'IoU':>7s}  {'CD':>9s}  {'NC':>7s}")
         for r in out_rows:
-            print(f"  {r['split']:12s} {r['window']:6s} {r['method']:21s} {r['n']:4d}  {r['iou_mean']:7.4f}  "
+            print(f"  {r['split']:12s} {r['window']:6s} {r['method']:22s} {r['n']:4d}  {r['iou_mean']:7.4f}  "
                   f"{r['chamfer_mean']:9.6f}  {r['nc_mean']:7.4f}"
                   + (f"  ({r['n_failed']} no mesh)" if r["n_failed"] else "")
                   + (f"  ({r['nc_n_nan']} NC nan)" if r["nc_n_nan"] else ""), flush=True)

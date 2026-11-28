@@ -18,6 +18,8 @@
 #     SMOKE=1 METHOD=flow ./jeanzay/train/submit_heldout.sh # 2 frames/split of the smoke run, dev QoS
 #     DRY=1 ./jeanzay/train/submit_heldout.sh               # print the sbatch commands only
 #  Already-finished evaluations are skipped (DONE marker), so re-running is cheap.
+#  REDO=1 clears the DONE markers first (after an evaluator change; finished frames stay cached):
+#     REDO=1 METHOD=flow ./jeanzay/train/submit_heldout.sh
 #  Results:  cd MAMBA-DSR && python eval_heldout.py --report
 # ===========================================================================
 set -euo pipefail
@@ -50,6 +52,7 @@ for CASE in $CASES; do
   if [ "$METHOD" = dsr ] || [ "$METHOD" = flow ]; then NAME="heldout_${METHOD}_${CASE}${TAG}"
   else NAME="heldout_${CASE}${TAG}${SUFFIX}"; fi
   LOGDIR="$REPO/jeanzay/train/logs/$NAME"; mkdir -p "$LOGDIR"
+  if [ "${REDO:-0}" = 1 ]; then rm -f "$REPO/jeanzay/train/state/$NAME/DONE"; fi   # rerun (cached frames are kept)
   DEP=""; IDS=()
   for ((i = 1; i <= NCHAIN; i++)); do
     CMD=(sbatch --parsable --job-name="$NAME" --qos="$QOS" --time="$TIME"
